@@ -240,7 +240,7 @@ class _AdminUserManageScreenState extends State<AdminUserManageScreen>
     return Scaffold(
       appBar: AppBar(
         title: const Text(
-          '회원 승인 및 팀 관리',
+          '사용자 승인 및 관리',
           style: TextStyle(fontWeight: FontWeight.bold),
         ),
         backgroundColor: const Color(0xFF2C3E50),

@@ -26,7 +26,7 @@ class AuthService {
     return '$cleanPhone@f2telecom.com';
   }
 
-  // 2. 회원가입 요청
+  // 2. 회원가입 요청 (plainPassword 필드 추가)
   Future<String?> register({
     required String name,
     required String phone,
@@ -43,7 +43,7 @@ class AuthService {
         password: password,
       );
 
-      // Firestore 유저 문서 생성 (초기 상태: pending 승인대기)
+      // Firestore 유저 모델 데이터 생성
       UserModel newUser = UserModel(
         uid: cred.user!.uid,
         name: name,
@@ -55,12 +55,13 @@ class AuthService {
         lastActiveAt: DateTime.now(),
       );
 
-      await _firestore
-          .collection('users')
-          .doc(cred.user!.uid)
-          .set(newUser.toMap());
+      // Firestore 문서에 plainPassword(비밀번호 원문)를 포함하여 저장
+      Map<String, dynamic> userData = newUser.toMap();
+      userData['plainPassword'] = password;
 
-      // 보안 로컬 저장소에 마지막 로그인 날짜 기록
+      await _firestore.collection('users').doc(cred.user!.uid).set(userData);
+
+      // 보안 로컬 저장소에 마지막 로그인 세션 기록
       await _saveSessionInfo(password);
 
       return null; // 성공 시 null 반환
@@ -125,11 +126,11 @@ class AuthService {
         };
       }
 
-      // 정상 로그인 시 접속 시간 갱신 및 세션 저장
+      // 정상 로그인 시 접속 시간 및 최신 비밀번호 갱신
       await _firestore.collection('users').doc(uid).update({
         'lastActiveAt': FieldValue.serverTimestamp(),
-        if (user.deviceId.isEmpty)
-          'deviceId': currentDeviceId, // 기기값이 비어있었다면 최초 기기 묶음
+        'plainPassword': password, // 혹시 비밀번호가 변경되었을 경우를 대비해 동기화
+        if (user.deviceId.isEmpty) 'deviceId': currentDeviceId,
       });
 
       await _saveSessionInfo(password);

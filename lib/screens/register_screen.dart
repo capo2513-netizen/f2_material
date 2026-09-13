@@ -135,7 +135,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
               controller: _teamController,
               decoration: InputDecoration(
                 labelText: '소속 팀명',
-                hintText: '예: 액세스운용1팀',
+                hintText: '예: 시설1팀 / 시험1팀',
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(10),
                 ),
