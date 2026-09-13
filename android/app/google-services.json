@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "884400775767",
+    "project_id": "f2-material",
+    "storage_bucket": "f2-material.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:884400775767:android:72233ee67796a02c31f912",
+        "android_client_info": {
+          "package_name": "com.f2telecom.f2_material"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB27sHoAi6R5026O1Dmk6BTrLk1AH01hjk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
