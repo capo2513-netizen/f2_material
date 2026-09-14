@@ -10,7 +10,7 @@ class OutItem {
   final String materialCode;
   final String materialName;
   int quantity;
-  List<String> sktSerials; // [개선] 묶음 시리얼 리스트
+  List<String> sktSerials; // 묶음 시리얼 리스트
   final bool requiresSerial;
   bool isConfirmed;
 
@@ -33,8 +33,28 @@ class UserOutScanScreen extends StatefulWidget {
 }
 
 class _UserOutScanScreenState extends State<UserOutScanScreen> {
+  final ScrollController _listScrollController = ScrollController();
   final List<OutItem> _cart = [];
   bool _isSubmitting = false;
+
+  @override
+  void dispose() {
+    _listScrollController.dispose();
+    super.dispose();
+  }
+
+  // 자재 추가 시 목록 맨 아래(최신 입력 항목)로 자동 스크롤
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_listScrollController.hasClients) {
+        _listScrollController.animateTo(
+          _listScrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
 
   void _openScannerModal() async {
     final status = await Permission.camera.request();
@@ -49,10 +69,7 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
 
     if (!mounted) return;
 
-    // 이미 장바구니에 담긴 모든 SKT 시리얼 리스트 취합 (중복 스캔 방지용)
-    final existingSerials = _cart
-        .expand((item) => item.sktSerials)
-        .toList();
+    final existingSerials = _cart.expand((item) => item.sktSerials).toList();
 
     await showModalBottomSheet(
       context: context,
@@ -63,6 +80,8 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
           setState(() {
             _cart.addAll(newItems);
           });
+          // 새 자재가 목록에 추가된 후 최하단으로 자동 스크롤
+          _scrollToBottom();
         },
         existingSerials: existingSerials,
       ),
@@ -161,9 +180,8 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
       return;
     }
 
-    final unconfirmedCount = _cart
-        .where((item) => !item.isConfirmed && !item.requiresSerial)
-        .length;
+    final unconfirmedCount =
+        _cart.where((item) => !item.isConfirmed && !item.requiresSerial).length;
     if (unconfirmedCount > 0) {
       final proceed = await showDialog<bool>(
         context: context,
@@ -196,10 +214,10 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
       if (proceed != true) return;
     }
 
-    // 총 출고 수량 합산 계산
     int totalCount = 0;
     for (var item in _cart) {
-      totalCount += item.requiresSerial ? item.sktSerials.length : item.quantity;
+      totalCount +=
+          item.requiresSerial ? item.sktSerials.length : item.quantity;
     }
 
     final confirm = await showDialog<bool>(
@@ -239,7 +257,6 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
       );
       final now = DateTime.now();
 
-      // [핵심] Firestore에는 기존 형식 그대로 개별 시리얼 행 단위로 저장
       for (var item in _cart) {
         if (item.requiresSerial) {
           for (var serial in item.sktSerials) {
@@ -278,7 +295,6 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
 
       if (!mounted) return;
 
-      // 0.5초 자동 닫힘 팝업
       showDialog(
         context: context,
         barrierDismissible: false,
@@ -421,6 +437,7 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
                       ),
                     )
                   : ListView.separated(
+                      controller: _listScrollController, // 컨트롤러 연결 완료
                       padding: const EdgeInsets.symmetric(
                         horizontal: 16,
                         vertical: 6,
@@ -477,7 +494,8 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
                                         ),
                                         decoration: BoxDecoration(
                                           color: const Color(0xFFE8F5E9),
-                                          borderRadius: BorderRadius.circular(4),
+                                          borderRadius:
+                                              BorderRadius.circular(4),
                                         ),
                                         child: const Text(
                                           '수량확정됨',
@@ -489,7 +507,6 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
                                         ),
                                       ),
                                     const Spacer(),
-                                    // 메인 리스트 개별 항목 삭제 버튼
                                     IconButton(
                                       icon: const Icon(
                                         Icons.close,
@@ -516,9 +533,8 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
                                     color: Colors.grey,
                                   ),
                                 ),
-
-                                // [핵심 개선] F2 코드 1개 란에 스캔된 SKT 시리얼들을 나열해서 묶음 표시
-                                if (item.requiresSerial && item.sktSerials.isNotEmpty) ...[
+                                if (item.requiresSerial &&
+                                    item.sktSerials.isNotEmpty) ...[
                                   const SizedBox(height: 8),
                                   Container(
                                     width: double.infinity,
@@ -526,13 +542,16 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
                                     decoration: BoxDecoration(
                                       color: const Color(0xFFFFF8E1),
                                       borderRadius: BorderRadius.circular(6),
-                                      border: Border.all(color: const Color(0xFFFFE082)),
+                                      border: Border.all(
+                                          color: const Color(0xFFFFE082)),
                                     ),
                                     child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
                                       children: [
                                         Row(
-                                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.spaceBetween,
                                           children: [
                                             const Text(
                                               '등록된 SKT 시리얼 목록',
@@ -556,15 +575,24 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
                                         Wrap(
                                           spacing: 6,
                                           runSpacing: 6,
-                                          children: item.sktSerials.asMap().entries.map((entry) {
+                                          children: item.sktSerials
+                                              .asMap()
+                                              .entries
+                                              .map((entry) {
                                             final idx = entry.key;
                                             final serial = entry.value;
                                             return Container(
-                                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                      horizontal: 8,
+                                                      vertical: 3),
                                               decoration: BoxDecoration(
                                                 color: Colors.white,
-                                                borderRadius: BorderRadius.circular(4),
-                                                border: Border.all(color: Colors.grey.shade300),
+                                                borderRadius:
+                                                    BorderRadius.circular(4),
+                                                border: Border.all(
+                                                    color:
+                                                        Colors.grey.shade300),
                                               ),
                                               child: Text(
                                                 '${idx + 1}. $serial',
@@ -581,7 +609,6 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
                                     ),
                                   ),
                                 ],
-
                                 const Divider(height: 16),
                                 Row(
                                   mainAxisAlignment:
@@ -637,7 +664,6 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
                                           fontWeight: FontWeight.bold,
                                         ),
                                       ),
-
                                     Row(
                                       children: [
                                         const Text(
@@ -661,7 +687,8 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
                                                 : () {
                                                     if (item.quantity > 1) {
                                                       setState(
-                                                        () => item.quantity -= 1,
+                                                        () =>
+                                                            item.quantity -= 1,
                                                       );
                                                     }
                                                   },
@@ -675,9 +702,9 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
                                             child: Container(
                                               padding:
                                                   const EdgeInsets.symmetric(
-                                                    horizontal: 10,
-                                                    vertical: 4,
-                                                  ),
+                                                horizontal: 10,
+                                                vertical: 4,
+                                              ),
                                               decoration: BoxDecoration(
                                                 color: Colors.grey[100],
                                                 borderRadius:
@@ -734,7 +761,6 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
                     ),
             ),
           ),
-
           SafeArea(
             top: false,
             bottom: true,
@@ -794,16 +820,20 @@ class _ScannerModalSheet extends StatefulWidget {
 
 class _ScannerModalSheetState extends State<_ScannerModalSheet> {
   final MobileScannerController _controller = MobileScannerController();
-  final List<String> _sessionSerials = []; // [개선] 현재 세션에서 찍은 SKT 시리얼 리스트
+  final List<String> _sessionSerials = [];
 
   bool _isWaitingSktSerial = false;
   String? _activeMatCode;
   String? _activeMatName;
   bool _isProcessing = false;
 
+  // 조준창 크기 (정사각형 280 x 280)
+  final double _scanWindowSize = 280.0;
+  final double _scanWindowTop = 70.0;
+
   @override
   void dispose() {
-    _controller.dispose();
+    _controller.dispose(); // 카메라 컨트롤러만 정리 (불필요한 _listScrollController 제거)
     super.dispose();
   }
 
@@ -820,16 +850,12 @@ class _ScannerModalSheetState extends State<_ScannerModalSheet> {
     final rawValue = barcode.rawValue!.trim();
     if (rawValue.isEmpty) return;
 
-    // ------------------------------------------------------------
-    // 1. SKT 시리얼 스캔 대기 모드 (F2 코드 스캔 차단)
-    // ------------------------------------------------------------
+    // 1. SKT 시리얼 스캔 대기 모드
     if (_isWaitingSktSerial) {
-      // (1) #SN 태그가 있거나 현재 선택된 자재코드와 일치하면 무시
       if (rawValue.contains('#SN') || rawValue == _activeMatCode) {
         return;
       }
 
-      // (2) 다른 F2 자재 QR을 스쳤는지 DB 확인하여 F2 코드면 시리얼 등록 차단
       try {
         final checkDoc = await FirebaseFirestore.instance
             .collection('materials')
@@ -840,13 +866,11 @@ class _ScannerModalSheetState extends State<_ScannerModalSheet> {
         }
       } catch (_) {}
 
-      // (3) 이미 등록된 시리얼이면 중복 방지
       if (widget.existingSerials.contains(rawValue) ||
           _sessionSerials.contains(rawValue)) {
         return;
       }
 
-      // [정상 SKT 시리얼 인식]
       _vibrate();
       _isProcessing = true;
 
@@ -859,9 +883,7 @@ class _ScannerModalSheetState extends State<_ScannerModalSheet> {
       return;
     }
 
-    // ------------------------------------------------------------
     // 2. F2 자재 QR 스캔 모드
-    // ------------------------------------------------------------
     _isProcessing = true;
 
     bool isSerialItem = false;
@@ -910,7 +932,6 @@ class _ScannerModalSheetState extends State<_ScannerModalSheet> {
       await Future.delayed(const Duration(milliseconds: 1000));
       _isProcessing = false;
     } else {
-      // 일반 자재인 경우 바로 1개 항목으로 대기 목록 추가
       widget.onItemsScanned([
         OutItem(
           materialCode: cleanMatCode,
@@ -924,7 +945,6 @@ class _ScannerModalSheetState extends State<_ScannerModalSheet> {
     }
   }
 
-  // [핵심] 스캔 완료 시 F2 코드 1개에 _sessionSerials 전체를 묶음으로 담아 전달
   void _finishSerialSession() {
     if (_activeMatCode != null && _sessionSerials.isNotEmpty) {
       widget.onItemsScanned([
@@ -932,7 +952,7 @@ class _ScannerModalSheetState extends State<_ScannerModalSheet> {
           materialCode: _activeMatCode!,
           materialName: _activeMatName!,
           quantity: _sessionSerials.length,
-          sktSerials: List<String>.from(_sessionSerials), // 묶음 리스트 전달
+          sktSerials: List<String>.from(_sessionSerials),
           requiresSerial: true,
           isConfirmed: true,
         ),
@@ -943,8 +963,18 @@ class _ScannerModalSheetState extends State<_ScannerModalSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final modalHeight = MediaQuery.of(context).size.height * 0.88;
+
+    final scanWindow = Rect.fromLTWH(
+      (screenWidth - _scanWindowSize) / 2,
+      _scanWindowTop,
+      _scanWindowSize,
+      _scanWindowSize,
+    );
+
     return Container(
-      height: MediaQuery.of(context).size.height * 0.85,
+      height: modalHeight,
       decoration: const BoxDecoration(
         color: Colors.black,
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
@@ -952,27 +982,27 @@ class _ScannerModalSheetState extends State<_ScannerModalSheet> {
       child: Stack(
         alignment: Alignment.center,
         children: [
-          MobileScanner(controller: _controller, onDetect: _onDetect),
-
-          // 조준 사각 프레임
+          MobileScanner(
+            controller: _controller,
+            scanWindow: scanWindow,
+            onDetect: _onDetect,
+          ),
           Positioned(
-            top: 70,
+            top: _scanWindowTop,
             child: Container(
-              width: 260,
-              height: 150,
+              width: _scanWindowSize,
+              height: _scanWindowSize,
               decoration: BoxDecoration(
                 border: Border.all(
                   color: _isWaitingSktSerial
                       ? const Color(0xFFF39800)
                       : Colors.white,
-                  width: 2.5,
+                  width: 3.0,
                 ),
-                borderRadius: BorderRadius.circular(14),
+                borderRadius: BorderRadius.circular(16),
               ),
             ),
           ),
-
-          // 상단 바
           Positioned(
             top: 14,
             left: 16,
@@ -997,10 +1027,8 @@ class _ScannerModalSheetState extends State<_ScannerModalSheet> {
               ],
             ),
           ),
-
-          // 안내 타이틀 뱃지
           Positioned(
-            top: 235,
+            top: _scanWindowTop + _scanWindowSize + 16,
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               decoration: BoxDecoration(
@@ -1014,8 +1042,8 @@ class _ScannerModalSheetState extends State<_ScannerModalSheet> {
               ),
               child: Text(
                 _isWaitingSktSerial
-                    ? '[$_activeMatName]\n장비의 SKT 시리얼 QR/바코드를 비추세요'
-                    : 'F2 자재 QR코드를 조준창에 비추세요',
+                    ? '[$_activeMatName]\n장비의 SKT 시리얼 QR/바코드를 사각형 안에 맞추세요'
+                    : 'F2 자재 QR코드를 사각형 안에 맞추세요',
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   color: Colors.white,
@@ -1025,11 +1053,9 @@ class _ScannerModalSheetState extends State<_ScannerModalSheet> {
               ),
             ),
           ),
-
-          // 실시간 시리얼 목록 + 개별 삭제(X) 버튼
           if (_isWaitingSktSerial)
             Positioned(
-              top: 295,
+              top: _scanWindowTop + _scanWindowSize + 76,
               bottom: 150,
               left: 20,
               right: 20,
@@ -1144,8 +1170,6 @@ class _ScannerModalSheetState extends State<_ScannerModalSheet> {
                 ),
               ),
             ),
-
-          // 하단 스캔 완료 버튼
           if (_isWaitingSktSerial)
             Positioned(
               bottom: 85,

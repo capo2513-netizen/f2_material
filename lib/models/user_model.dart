@@ -8,7 +8,7 @@ class UserModel {
   final String role; // user, operator, admin, super_admin
   final String status; // pending, approved, dormant, rejected
   final String deviceId; // 1인 1단말기 고유값
-  final DateTime lastActiveAt;
+  final DateTime lastActiveAt; // 수정 완료
 
   UserModel({
     required this.uid,
@@ -22,6 +22,15 @@ class UserModel {
   });
 
   factory UserModel.fromMap(Map<String, dynamic> data, String documentId) {
+    DateTime parseDate(dynamic value) {
+      if (value is Timestamp) {
+        return value.toDate();
+      } else if (value is String) {
+        return DateTime.tryParse(value) ?? DateTime.now();
+      }
+      return DateTime.now();
+    }
+
     return UserModel(
       uid: documentId,
       name: data['name'] ?? '',
@@ -30,8 +39,7 @@ class UserModel {
       role: data['role'] ?? 'user',
       status: data['status'] ?? 'pending',
       deviceId: data['deviceId'] ?? '',
-      lastActiveAt:
-          (data['lastActiveAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
+      lastActiveAt: parseDate(data['lastActiveAt']),
     );
   }
 
