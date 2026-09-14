@@ -144,6 +144,7 @@ class _AdminUserManageScreenState extends State<AdminUserManageScreen>
                     border: OutlineInputBorder(),
                   ),
                   items: [
+                    // 일반 admin은 작업자 등급만 부여 가능
                     const DropdownMenuItem(
                       value: 'user',
                       child: Text('사용자 (출고 전용)'),
@@ -152,10 +153,11 @@ class _AdminUserManageScreenState extends State<AdminUserManageScreen>
                       value: 'operator',
                       child: Text('운영자 (입/출고)'),
                     ),
+                    // 최고관리자만 관리자 및 총괄관리자 지정 가능
                     if (isSuperAdmin) ...[
                       const DropdownMenuItem(
                         value: 'admin',
-                        child: Text('관리자 (회원/자재관리)'),
+                        child: Text('관리자 (일반 회원관리)'),
                       ),
                       const DropdownMenuItem(
                         value: 'super_admin',
@@ -267,9 +269,18 @@ class _AdminUserManageScreenState extends State<AdminUserManageScreen>
                 .where('status', isEqualTo: 'pending')
                 .snapshots(),
             builder: (context, snapshot) {
-              if (!snapshot.hasData)
+              if (!snapshot.hasData) {
                 return const Center(child: CircularProgressIndicator());
-              final docs = snapshot.data!.docs;
+              }
+
+              // [핵심 필터링] 일반 admin인 경우 super_admin 계정은 아예 안 보이게 배제
+              final docs = snapshot.data!.docs.where((doc) {
+                final data = doc.data() as Map<String, dynamic>;
+                if (!isSuperAdmin && data['role'] == 'super_admin') {
+                  return false;
+                }
+                return true;
+              }).toList();
 
               if (docs.isEmpty) {
                 return const Center(
@@ -289,6 +300,7 @@ class _AdminUserManageScreenState extends State<AdminUserManageScreen>
                     docs[index].data() as Map<String, dynamic>,
                     docs[index].id,
                   );
+
                   return Card(
                     elevation: 2,
                     child: Padding(
@@ -368,9 +380,18 @@ class _AdminUserManageScreenState extends State<AdminUserManageScreen>
           StreamBuilder<QuerySnapshot>(
             stream: _firestore.collection('users').snapshots(),
             builder: (context, snapshot) {
-              if (!snapshot.hasData)
+              if (!snapshot.hasData) {
                 return const Center(child: CircularProgressIndicator());
-              final docs = snapshot.data!.docs;
+              }
+
+              // [핵심 필터링] 일반 admin이 볼 때는 super_admin 데이터를 아예 리스트에서 배제
+              final docs = snapshot.data!.docs.where((doc) {
+                final data = doc.data() as Map<String, dynamic>;
+                if (!isSuperAdmin && data['role'] == 'super_admin') {
+                  return false; // 일반 관리자 화면에선 super_admin 존재 자체를 숨김
+                }
+                return true;
+              }).toList();
 
               return ListView.separated(
                 padding: const EdgeInsets.all(16),
@@ -381,9 +402,9 @@ class _AdminUserManageScreenState extends State<AdminUserManageScreen>
                     docs[index].data() as Map<String, dynamic>,
                     docs[index].id,
                   );
-                  final bool isTargetAdmin =
-                      user.role == 'admin' || user.role == 'super_admin';
                   final bool isMe = user.uid == widget.currentUser.uid;
+                  // 일반 admin은 동급 admin의 정보를 건드릴 수 없도록 보호
+                  final bool isOtherAdmin = !isSuperAdmin && user.role == 'admin' && !isMe;
 
                   return Card(
                     elevation: 1,
@@ -403,7 +424,26 @@ class _AdminUserManageScreenState extends State<AdminUserManageScreen>
                             ),
                           ),
                           const SizedBox(width: 6),
-                          if (user.status == 'dormant')
+                          // 오직 super_admin 본인이 볼 때만 최고관리자 뱃지 표시
+                          if (user.role == 'super_admin')
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: Colors.purple.shade50,
+                                borderRadius: BorderRadius.circular(4),
+                                border: Border.all(color: Colors.purple.shade200),
+                              ),
+                              child: Text(
+                                '총괄관리자',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  color: Colors.purple.shade700,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          if (user.status == 'dormant') ...[
+                            const SizedBox(width: 4),
                             Container(
                               padding: const EdgeInsets.symmetric(
                                 horizontal: 6,
@@ -422,6 +462,7 @@ class _AdminUserManageScreenState extends State<AdminUserManageScreen>
                                 ),
                               ),
                             ),
+                          ],
                         ],
                       ),
                       subtitle: Column(
@@ -443,32 +484,35 @@ class _AdminUserManageScreenState extends State<AdminUserManageScreen>
                           // 휴면 계정이면 해제 버튼
                           if (user.status == 'dormant')
                             IconButton(
-                              icon: const Icon(
+                              icon: Icon(
                                 Icons.lock_open,
-                                color: Colors.orange,
+                                color: isOtherAdmin ? Colors.grey[300] : Colors.orange,
                               ),
-                              tooltip: '휴면 해제',
-                              onPressed: () => _unlockDormantUser(user),
+                              tooltip: isOtherAdmin ? '수정 불가' : '휴면 해제',
+                              onPressed: isOtherAdmin ? null : () => _unlockDormantUser(user),
                             ),
+
                           // 단말기 초기화 버튼
                           IconButton(
-                            icon: const Icon(
+                            icon: Icon(
                               Icons.phonelink_erase,
-                              color: Colors.blueGrey,
+                              color: isOtherAdmin ? Colors.grey[300] : Colors.blueGrey,
                             ),
-                            tooltip: '단말기 초기화',
-                            onPressed: () => _resetDeviceId(user),
+                            tooltip: isOtherAdmin ? '동급 관리자 초기화 불가' : '단말기 초기화',
+                            onPressed: isOtherAdmin ? null : () => _resetDeviceId(user),
                           ),
-                          // 정보 수정 버튼
+
+                          // 정보/등급 수정 버튼
                           IconButton(
-                            icon: const Icon(
+                            icon: Icon(
                               Icons.edit,
-                              color: Colors.blueGrey,
+                              color: isOtherAdmin ? Colors.grey[300] : Colors.blueGrey,
                             ),
-                            tooltip: '정보/등급 수정',
-                            onPressed: () => _showEditUserDialog(user),
+                            tooltip: isOtherAdmin ? '동급 관리자 수정 불가' : '정보/등급 수정',
+                            onPressed: isOtherAdmin ? null : () => _showEditUserDialog(user),
                           ),
-                          // 최고관리자만 볼 수 있는 관리자/회원 영구 탈퇴/삭제 버튼
+
+                          // 최고관리자만 가능한 계정 영구 삭제 버튼
                           if (isSuperAdmin && !isMe)
                             IconButton(
                               icon: const Icon(

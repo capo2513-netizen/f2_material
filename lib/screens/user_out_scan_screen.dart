@@ -5,11 +5,12 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../models/user_model.dart';
 
+/// 출고 아이템 모델: F2 코드 1건당 SKT 시리얼들을 묶음(List<String>)으로 보관
 class OutItem {
   final String materialCode;
   final String materialName;
   int quantity;
-  String? sktSerial;
+  List<String> sktSerials; // [개선] 묶음 시리얼 리스트
   final bool requiresSerial;
   bool isConfirmed;
 
@@ -17,10 +18,10 @@ class OutItem {
     required this.materialCode,
     required this.materialName,
     required this.quantity,
-    this.sktSerial,
+    List<String>? sktSerials,
     required this.requiresSerial,
     this.isConfirmed = false,
-  });
+  }) : sktSerials = sktSerials ?? [];
 }
 
 class UserOutScanScreen extends StatefulWidget {
@@ -48,6 +49,11 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
 
     if (!mounted) return;
 
+    // 이미 장바구니에 담긴 모든 SKT 시리얼 리스트 취합 (중복 스캔 방지용)
+    final existingSerials = _cart
+        .expand((item) => item.sktSerials)
+        .toList();
+
     await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -58,10 +64,7 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
             _cart.addAll(newItems);
           });
         },
-        existingSerials: _cart
-            .where((i) => i.sktSerial != null)
-            .map((i) => i.sktSerial!)
-            .toList(),
+        existingSerials: existingSerials,
       ),
     );
   }
@@ -193,6 +196,12 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
       if (proceed != true) return;
     }
 
+    // 총 출고 수량 합산 계산
+    int totalCount = 0;
+    for (var item in _cart) {
+      totalCount += item.requiresSerial ? item.sktSerials.length : item.quantity;
+    }
+
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -201,7 +210,7 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
           style: TextStyle(fontWeight: FontWeight.bold),
         ),
         content: Text(
-          '총 ${_cart.length}건의 출고 데이터를 전송하시겠습니까?\n작업자: [${widget.currentUser.team}] ${widget.currentUser.name}',
+          '총 ${_cart.length}개 항목 (총 $totalCount개 수량)의 출고 데이터를 전송하시겠습니까?\n작업자: [${widget.currentUser.team}] ${widget.currentUser.name}',
         ),
         actions: [
           TextButton(
@@ -230,20 +239,39 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
       );
       final now = DateTime.now();
 
+      // [핵심] Firestore에는 기존 형식 그대로 개별 시리얼 행 단위로 저장
       for (var item in _cart) {
-        final docRef = collection.doc();
-        batch.set(docRef, {
-          'timestamp': FieldValue.serverTimestamp(),
-          'displayTime': now.toIso8601String(),
-          'team': widget.currentUser.team,
-          'userName': widget.currentUser.name,
-          'userPhone': widget.currentUser.phone,
-          'materialCode': item.materialCode,
-          'materialName': item.materialName,
-          'quantity': item.quantity,
-          'sktSerial': item.sktSerial ?? '',
-          'syncedToExcel': false,
-        });
+        if (item.requiresSerial) {
+          for (var serial in item.sktSerials) {
+            final docRef = collection.doc();
+            batch.set(docRef, {
+              'timestamp': FieldValue.serverTimestamp(),
+              'displayTime': now.toIso8601String(),
+              'team': widget.currentUser.team,
+              'userName': widget.currentUser.name,
+              'userPhone': widget.currentUser.phone,
+              'materialCode': item.materialCode,
+              'materialName': item.materialName,
+              'quantity': 1,
+              'sktSerial': serial,
+              'syncedToExcel': false,
+            });
+          }
+        } else {
+          final docRef = collection.doc();
+          batch.set(docRef, {
+            'timestamp': FieldValue.serverTimestamp(),
+            'displayTime': now.toIso8601String(),
+            'team': widget.currentUser.team,
+            'userName': widget.currentUser.name,
+            'userPhone': widget.currentUser.phone,
+            'materialCode': item.materialCode,
+            'materialName': item.materialName,
+            'quantity': item.quantity,
+            'sktSerial': '',
+            'syncedToExcel': false,
+          });
+        }
       }
 
       await batch.commit();
@@ -364,7 +392,7 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
-                  '출고 대기 목록 (${_cart.length}건)',
+                  '출고 대기 목록 (${_cart.length}개 항목)',
                   style: const TextStyle(
                     fontWeight: FontWeight.bold,
                     fontSize: 15,
@@ -449,9 +477,7 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
                                         ),
                                         decoration: BoxDecoration(
                                           color: const Color(0xFFE8F5E9),
-                                          borderRadius: BorderRadius.circular(
-                                            4,
-                                          ),
+                                          borderRadius: BorderRadius.circular(4),
                                         ),
                                         child: const Text(
                                           '수량확정됨',
@@ -463,7 +489,7 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
                                         ),
                                       ),
                                     const Spacer(),
-                                    // 메인 리스트 개별 삭제 버튼
+                                    // 메인 리스트 개별 항목 삭제 버튼
                                     IconButton(
                                       icon: const Icon(
                                         Icons.close,
@@ -490,28 +516,72 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
                                     color: Colors.grey,
                                   ),
                                 ),
-                                if (item.sktSerial != null &&
-                                    item.sktSerial!.isNotEmpty) ...[
-                                  const SizedBox(height: 6),
+
+                                // [핵심 개선] F2 코드 1개 란에 스캔된 SKT 시리얼들을 나열해서 묶음 표시
+                                if (item.requiresSerial && item.sktSerials.isNotEmpty) ...[
+                                  const SizedBox(height: 8),
                                   Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 8,
-                                      vertical: 4,
-                                    ),
+                                    width: double.infinity,
+                                    padding: const EdgeInsets.all(8),
                                     decoration: BoxDecoration(
-                                      color: const Color(0xFFFFF3E0),
-                                      borderRadius: BorderRadius.circular(4),
+                                      color: const Color(0xFFFFF8E1),
+                                      borderRadius: BorderRadius.circular(6),
+                                      border: Border.all(color: const Color(0xFFFFE082)),
                                     ),
-                                    child: Text(
-                                      'SKT S/N: ${item.sktSerial}',
-                                      style: const TextStyle(
-                                        fontSize: 13,
-                                        color: Color(0xFFE65100),
-                                        fontWeight: FontWeight.bold,
-                                      ),
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                          children: [
+                                            const Text(
+                                              '등록된 SKT 시리얼 목록',
+                                              style: TextStyle(
+                                                fontSize: 11,
+                                                fontWeight: FontWeight.bold,
+                                                color: Color(0xFFE65100),
+                                              ),
+                                            ),
+                                            Text(
+                                              '총 ${item.sktSerials.length}대',
+                                              style: const TextStyle(
+                                                fontSize: 11,
+                                                fontWeight: FontWeight.bold,
+                                                color: Color(0xFFE65100),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 6),
+                                        Wrap(
+                                          spacing: 6,
+                                          runSpacing: 6,
+                                          children: item.sktSerials.asMap().entries.map((entry) {
+                                            final idx = entry.key;
+                                            final serial = entry.value;
+                                            return Container(
+                                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                              decoration: BoxDecoration(
+                                                color: Colors.white,
+                                                borderRadius: BorderRadius.circular(4),
+                                                border: Border.all(color: Colors.grey.shade300),
+                                              ),
+                                              child: Text(
+                                                '${idx + 1}. $serial',
+                                                style: const TextStyle(
+                                                  fontSize: 12,
+                                                  color: Colors.black87,
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                              ),
+                                            );
+                                          }).toList(),
+                                        ),
+                                      ],
                                     ),
                                   ),
                                 ],
+
                                 const Divider(height: 16),
                                 Row(
                                   mainAxisAlignment:
@@ -559,11 +629,11 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
                                               ),
                                             )
                                     else
-                                      const Text(
-                                        '단일 개별 시리얼 (1개)',
-                                        style: TextStyle(
+                                      Text(
+                                        '총 ${item.sktSerials.length}대 묶음 등록',
+                                        style: const TextStyle(
                                           fontSize: 12,
-                                          color: Colors.grey,
+                                          color: Color(0xFFE65100),
                                           fontWeight: FontWeight.bold,
                                         ),
                                       ),
@@ -589,11 +659,11 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
                                             onPressed: item.isConfirmed
                                                 ? null
                                                 : () {
-                                                    if (item.quantity > 1)
+                                                    if (item.quantity > 1) {
                                                       setState(
-                                                        () =>
-                                                            item.quantity -= 1,
+                                                        () => item.quantity -= 1,
                                                       );
+                                                    }
                                                   },
                                           ),
                                           InkWell(
@@ -639,13 +709,13 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
                                             onPressed: item.isConfirmed
                                                 ? null
                                                 : () => setState(
-                                                    () => item.quantity += 1,
-                                                  ),
+                                                      () => item.quantity += 1,
+                                                    ),
                                           ),
                                         ] else ...[
-                                          const Text(
-                                            '1 EA',
-                                            style: TextStyle(
+                                          Text(
+                                            '${item.sktSerials.length} EA',
+                                            style: const TextStyle(
                                               fontSize: 14,
                                               fontWeight: FontWeight.bold,
                                               color: Color(0xFFF39800),
@@ -690,7 +760,7 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
                   child: _isSubmitting
                       ? const CircularProgressIndicator(color: Colors.white)
                       : Text(
-                          '출고 전송 완료 (총 ${_cart.length}건)',
+                          '출고 전송 완료 (총 ${_cart.length}개 항목)',
                           style: const TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.bold,
@@ -724,7 +794,7 @@ class _ScannerModalSheet extends StatefulWidget {
 
 class _ScannerModalSheetState extends State<_ScannerModalSheet> {
   final MobileScannerController _controller = MobileScannerController();
-  final List<OutItem> _sessionItems = [];
+  final List<String> _sessionSerials = []; // [개선] 현재 세션에서 찍은 SKT 시리얼 리스트
 
   bool _isWaitingSktSerial = false;
   String? _activeMatCode;
@@ -751,28 +821,28 @@ class _ScannerModalSheetState extends State<_ScannerModalSheet> {
     if (rawValue.isEmpty) return;
 
     // ------------------------------------------------------------
-    // 1. SKT 시리얼 스캔 대기 모드 (F2 코드 스캔 원천 차단)
+    // 1. SKT 시리얼 스캔 대기 모드 (F2 코드 스캔 차단)
     // ------------------------------------------------------------
     if (_isWaitingSktSerial) {
-      // (1) #SN 태그가 있거나, 현재 선택된 자재코드와 일치하면 무조건 F2 자재코드로 판별하여 완전 차단
+      // (1) #SN 태그가 있거나 현재 선택된 자재코드와 일치하면 무시
       if (rawValue.contains('#SN') || rawValue == _activeMatCode) {
-        return; // 아무것도 하지 않고 조용히 무시 (오등록 차단)
+        return;
       }
 
-      // (2) 혹시 다른 F2 자재 QR을 스쳤는지 DB 확인하여 F2 코드면 시리얼 등록 차단
+      // (2) 다른 F2 자재 QR을 스쳤는지 DB 확인하여 F2 코드면 시리얼 등록 차단
       try {
         final checkDoc = await FirebaseFirestore.instance
             .collection('materials')
             .doc(rawValue)
             .get();
         if (checkDoc.exists) {
-          return; // F2 자재코드이므로 SKT 시리얼로 들어가지 않게 차단
+          return;
         }
       } catch (_) {}
 
-      // (3) 이미 찍힌 시리얼이면 중복 등록 방지
+      // (3) 이미 등록된 시리얼이면 중복 방지
       if (widget.existingSerials.contains(rawValue) ||
-          _sessionItems.any((i) => i.sktSerial == rawValue)) {
+          _sessionSerials.contains(rawValue)) {
         return;
       }
 
@@ -781,16 +851,7 @@ class _ScannerModalSheetState extends State<_ScannerModalSheet> {
       _isProcessing = true;
 
       setState(() {
-        _sessionItems.add(
-          OutItem(
-            materialCode: _activeMatCode!,
-            materialName: _activeMatName!,
-            quantity: 1,
-            sktSerial: rawValue,
-            requiresSerial: true,
-            isConfirmed: true,
-          ),
-        );
+        _sessionSerials.add(rawValue);
       });
 
       await Future.delayed(const Duration(milliseconds: 900));
@@ -849,6 +910,7 @@ class _ScannerModalSheetState extends State<_ScannerModalSheet> {
       await Future.delayed(const Duration(milliseconds: 1000));
       _isProcessing = false;
     } else {
+      // 일반 자재인 경우 바로 1개 항목으로 대기 목록 추가
       widget.onItemsScanned([
         OutItem(
           materialCode: cleanMatCode,
@@ -862,8 +924,20 @@ class _ScannerModalSheetState extends State<_ScannerModalSheet> {
     }
   }
 
+  // [핵심] 스캔 완료 시 F2 코드 1개에 _sessionSerials 전체를 묶음으로 담아 전달
   void _finishSerialSession() {
-    widget.onItemsScanned(_sessionItems);
+    if (_activeMatCode != null && _sessionSerials.isNotEmpty) {
+      widget.onItemsScanned([
+        OutItem(
+          materialCode: _activeMatCode!,
+          materialName: _activeMatName!,
+          quantity: _sessionSerials.length,
+          sktSerials: List<String>.from(_sessionSerials), // 묶음 리스트 전달
+          requiresSerial: true,
+          isConfirmed: true,
+        ),
+      ]);
+    }
     Navigator.pop(context);
   }
 
@@ -917,10 +991,7 @@ class _ScannerModalSheetState extends State<_ScannerModalSheet> {
                 IconButton(
                   icon: const Icon(Icons.close, color: Colors.white, size: 30),
                   onPressed: () {
-                    if (_sessionItems.isNotEmpty) {
-                      widget.onItemsScanned(_sessionItems);
-                    }
-                    Navigator.pop(context);
+                    _finishSerialSession();
                   },
                 ),
               ],
@@ -955,7 +1026,7 @@ class _ScannerModalSheetState extends State<_ScannerModalSheet> {
             ),
           ),
 
-          // [핵심 개선] 스캔 화면 내 실시간 시리얼 목록 + '개별 삭제(X) 버튼'
+          // 실시간 시리얼 목록 + 개별 삭제(X) 버튼
           if (_isWaitingSktSerial)
             Positioned(
               top: 295,
@@ -993,7 +1064,7 @@ class _ScannerModalSheetState extends State<_ScannerModalSheet> {
                             borderRadius: BorderRadius.circular(12),
                           ),
                           child: Text(
-                            '총 ${_sessionItems.length}대',
+                            '총 ${_sessionSerials.length}대',
                             style: const TextStyle(
                               color: Colors.white,
                               fontWeight: FontWeight.bold,
@@ -1005,7 +1076,7 @@ class _ScannerModalSheetState extends State<_ScannerModalSheet> {
                     ),
                     const Divider(color: Colors.white24, height: 10),
                     Expanded(
-                      child: _sessionItems.isEmpty
+                      child: _sessionSerials.isEmpty
                           ? const Center(
                               child: Text(
                                 '아직 스캔된 시리얼이 없습니다.\n카메라로 SKT 바코드를 비추세요.',
@@ -1018,10 +1089,9 @@ class _ScannerModalSheetState extends State<_ScannerModalSheet> {
                             )
                           : ListView.builder(
                               padding: EdgeInsets.zero,
-                              itemCount: _sessionItems.length,
+                              itemCount: _sessionSerials.length,
                               itemBuilder: (context, idx) {
-                                final serial =
-                                    _sessionItems[idx].sktSerial ?? '';
+                                final serial = _sessionSerials[idx];
                                 return Padding(
                                   padding: const EdgeInsets.symmetric(
                                     vertical: 2.0,
@@ -1048,11 +1118,10 @@ class _ScannerModalSheetState extends State<_ScannerModalSheet> {
                                           overflow: TextOverflow.ellipsis,
                                         ),
                                       ),
-                                      // [실시간 개별 삭제 버튼]
                                       InkWell(
                                         onTap: () {
                                           setState(() {
-                                            _sessionItems.removeAt(idx);
+                                            _sessionSerials.removeAt(idx);
                                           });
                                         },
                                         borderRadius: BorderRadius.circular(12),
@@ -1092,7 +1161,7 @@ class _ScannerModalSheetState extends State<_ScannerModalSheet> {
                     size: 20,
                   ),
                   label: Text(
-                    '스캔 완료 (${_sessionItems.length}대 저장)',
+                    '스캔 완료 (${_sessionSerials.length}대 묶음 저장)',
                     style: const TextStyle(
                       fontWeight: FontWeight.bold,
                       color: Colors.white,
