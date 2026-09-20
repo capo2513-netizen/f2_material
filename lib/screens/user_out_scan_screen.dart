@@ -1,31 +1,35 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; // 햅틱 진동 엔진
-import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import '../models/user_model.dart';
 
-/// 출고 아이템 모델: F2 코드 1건당 SKT 시리얼들을 묶음(List<String>)으로 보관
+// ------------------------------------------------------------
+// 출고 품목 데이터 모델
+// ------------------------------------------------------------
 class OutItem {
   final String materialCode;
   final String materialName;
   int quantity;
-  List<String> sktSerials; // 묶음 시리얼 리스트
   final bool requiresSerial;
+  List<String> sktSerials;
   bool isConfirmed;
 
   OutItem({
     required this.materialCode,
     required this.materialName,
     required this.quantity,
-    List<String>? sktSerials,
     required this.requiresSerial,
+    List<String>? sktSerials,
     this.isConfirmed = false,
   }) : sktSerials = sktSerials ?? [];
 }
 
+// ------------------------------------------------------------
+// 사용자 자재 출고 등록 메인 화면
+// ------------------------------------------------------------
 class UserOutScanScreen extends StatefulWidget {
   final UserModel currentUser;
+
   const UserOutScanScreen({super.key, required this.currentUser});
 
   @override
@@ -33,202 +37,91 @@ class UserOutScanScreen extends StatefulWidget {
 }
 
 class _UserOutScanScreenState extends State<UserOutScanScreen> {
-  final ScrollController _listScrollController = ScrollController();
+  String _selectedWarehouse = '광주'; // 기본 광주
   final List<OutItem> _cart = [];
   bool _isSubmitting = false;
 
-  @override
-  void dispose() {
-    _listScrollController.dispose();
-    super.dispose();
+  // 장바구니 총 품목 수
+  int get _totalItemCount => _cart.fold(0, (sum, item) => sum + item.quantity);
+
+  // 품목 목록 모달 열기 (대분류/소분류/규격 선택 및 메시지 전송)
+  void _openItemListModal() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => _CategoryItemSelectModal(
+        selectedWarehouse: _selectedWarehouse,
+        currentUser: widget.currentUser,
+        onItemsAdded: (newItems) {
+          setState(() {
+            for (var newItem in newItems) {
+              final existingIndex = _cart.indexWhere(
+                (item) => item.materialCode == newItem.materialCode,
+              );
+              if (existingIndex >= 0) {
+                _cart[existingIndex].quantity += newItem.quantity;
+              } else {
+                _cart.add(newItem);
+              }
+            }
+          });
+        },
+      ),
+    );
   }
 
-  // 자재 추가 시 목록 맨 아래(최신 입력 항목)로 자동 스크롤
-  void _scrollToBottom() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_listScrollController.hasClients) {
-        _listScrollController.animateTo(
-          _listScrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-        );
-      }
-    });
-  }
-
-  void _openScannerModal() async {
-    final status = await Permission.camera.request();
-    if (!status.isGranted) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('카메라 사용 권한이 필요합니다. 설정에서 허용해주세요.')),
-        );
-      }
-      return;
-    }
-
-    if (!mounted) return;
-
-    final existingSerials = _cart.expand((item) => item.sktSerials).toList();
-
-    await showModalBottomSheet(
+  // QR 바코드 스캐너 모달 열기
+  void _openScannerModal() {
+    showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (ctx) => _ScannerModalSheet(
-        onItemsScanned: (List<OutItem> newItems) {
+        selectedWarehouse: _selectedWarehouse,
+        existingSerials: _cart.expand((item) => item.sktSerials).toList(),
+        onItemsScanned: (scannedItems) {
           setState(() {
-            _cart.addAll(newItems);
-          });
-          // 새 자재가 목록에 추가된 후 최하단으로 자동 스크롤
-          _scrollToBottom();
-        },
-        existingSerials: existingSerials,
-      ),
-    );
-  }
-
-  void _openManualListModal() {
-    showModalBottomSheet(
-      context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (ctx) => Container(
-        height: 350,
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text(
-                  '자재 목록 선택',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.close),
-                  onPressed: () => Navigator.pop(ctx),
-                ),
-              ],
-            ),
-            const Divider(),
-            const Expanded(
-              child: Center(
-                child: Text(
-                  '대분류 / 중분류 / 소분류 기반 자재 목록이 이곳에 연결됩니다.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.grey),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _showQuantityInputDialog(OutItem item) {
-    if (item.isConfirmed || item.requiresSerial) return;
-    final controller = TextEditingController(text: '${item.quantity}');
-
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(
-          '${item.materialName}\n수량 직접 입력',
-          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-        ),
-        content: TextField(
-          controller: controller,
-          keyboardType: TextInputType.number,
-          autofocus: true,
-          decoration: const InputDecoration(
-            labelText: '출고 수량 (개)',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('취소'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              final val = int.tryParse(controller.text.trim());
-              if (val != null && val > 0) {
-                setState(() => item.quantity = val);
+            for (var scanned in scannedItems) {
+              final existingIndex = _cart.indexWhere(
+                (item) => item.materialCode == scanned.materialCode,
+              );
+              if (existingIndex >= 0) {
+                if (scanned.requiresSerial) {
+                  _cart[existingIndex].sktSerials.addAll(scanned.sktSerials);
+                  _cart[existingIndex].quantity =
+                      _cart[existingIndex].sktSerials.length;
+                } else {
+                  _cart[existingIndex].quantity += scanned.quantity;
+                }
+              } else {
+                _cart.add(scanned);
               }
-              Navigator.pop(ctx);
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFA61C24),
-            ),
-            child: const Text('적용', style: TextStyle(color: Colors.white)),
-          ),
-        ],
+            }
+          });
+        },
       ),
     );
   }
 
-  void _submitOut() async {
+  // 출고 최종 전송 (Firebase 이력 등록 + materials currentStock 즉시 차감)
+  Future<void> _submitOut() async {
     if (_cart.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('등록된 출고 자재가 없습니다.')));
-      return;
-    }
-
-    final unconfirmedCount =
-        _cart.where((item) => !item.isConfirmed && !item.requiresSerial).length;
-    if (unconfirmedCount > 0) {
-      final proceed = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text(
-            '수량 미확정 알림',
-            style: TextStyle(fontWeight: FontWeight.bold),
-          ),
-          content: Text(
-            '수량 확정을 누르지 않은 일반자재가 $unconfirmedCount건 있습니다.\n현재 수량 그대로 전송하시겠습니까?',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('취소'),
-            ),
-            ElevatedButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFA61C24),
-              ),
-              child: const Text(
-                '그대로 전송',
-                style: TextStyle(color: Colors.white),
-              ),
-            ),
-          ],
-        ),
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('장바구니에 담긴 출고 자재가 없습니다.')),
       );
-      if (proceed != true) return;
-    }
-
-    int totalCount = 0;
-    for (var item in _cart) {
-      totalCount +=
-          item.requiresSerial ? item.sktSerials.length : item.quantity;
+      return;
     }
 
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text(
-          '출고 전송 확인',
-          style: TextStyle(fontWeight: FontWeight.bold),
-        ),
+        title: const Text('출고 전송 확인',
+            style: TextStyle(fontWeight: FontWeight.bold)),
         content: Text(
-          '총 ${_cart.length}개 항목 (총 $totalCount개 수량)의 출고 데이터를 전송하시겠습니까?\n작업자: [${widget.currentUser.team}] ${widget.currentUser.name}',
+          '선택 거점: [$_selectedWarehouse 창고]\n'
+          '총 ${_cart.length}개 품목 (${_totalItemCount}개)\n\n'
+          '출고를 확정 전송하시겠습니까?',
         ),
         actions: [
           TextButton(
@@ -239,8 +132,9 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
             onPressed: () => Navigator.pop(ctx, true),
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFFA61C24),
+              foregroundColor: Colors.white,
             ),
-            child: const Text('전송', style: TextStyle(color: Colors.white)),
+            child: const Text('출고 확정'),
           ),
         ],
       ),
@@ -251,19 +145,27 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
     setState(() => _isSubmitting = true);
 
     try {
-      final batch = FirebaseFirestore.instance.batch();
-      final collection = FirebaseFirestore.instance.collection(
-        'normal_out_logs',
-      );
       final now = DateTime.now();
+      final dateStr =
+          '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+      final timeStr =
+          '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
+
+      final firestore = FirebaseFirestore.instance;
+      final batch = firestore.batch();
+      final logCollection = firestore.collection('normal_out_logs');
+      final matCollection = firestore.collection('materials');
 
       for (var item in _cart) {
         if (item.requiresSerial) {
+          // 시리얼 자재
           for (var serial in item.sktSerials) {
-            final docRef = collection.doc();
+            final docRef = logCollection.doc();
             batch.set(docRef, {
               'timestamp': FieldValue.serverTimestamp(),
-              'displayTime': now.toIso8601String(),
+              'outDate': dateStr,
+              'outTime': timeStr,
+              'warehouse': _selectedWarehouse,
               'team': widget.currentUser.team,
               'userName': widget.currentUser.name,
               'userPhone': widget.currentUser.phone,
@@ -274,11 +176,20 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
               'syncedToExcel': false,
             });
           }
+
+          // 재고 실시간 차감
+          final matDocRef = matCollection.doc(item.materialCode);
+          batch.update(matDocRef, {
+            'currentStock': FieldValue.increment(-item.sktSerials.length),
+          });
         } else {
-          final docRef = collection.doc();
+          // 일반 자재
+          final docRef = logCollection.doc();
           batch.set(docRef, {
             'timestamp': FieldValue.serverTimestamp(),
-            'displayTime': now.toIso8601String(),
+            'outDate': dateStr,
+            'outTime': timeStr,
+            'warehouse': _selectedWarehouse,
             'team': widget.currentUser.team,
             'userName': widget.currentUser.name,
             'userPhone': widget.currentUser.phone,
@@ -288,509 +199,323 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
             'sktSerial': '',
             'syncedToExcel': false,
           });
+
+          // 재고 실시간 차감
+          final matDocRef = matCollection.doc(item.materialCode);
+          batch.update(matDocRef, {
+            'currentStock': FieldValue.increment(-item.quantity),
+          });
         }
       }
 
       await batch.commit();
 
       if (!mounted) return;
+      setState(() {
+        _cart.clear();
+        _isSubmitting = false;
+      });
 
       showDialog(
         context: context,
-        barrierDismissible: false,
-        builder: (ctx) {
-          Future.delayed(const Duration(milliseconds: 500), () {
-            if (ctx.mounted) {
-              Navigator.pop(ctx);
-              Navigator.pop(context);
-            }
-          });
-          return AlertDialog(
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            content: const Padding(
-              padding: EdgeInsets.symmetric(vertical: 8),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.check_circle, color: Color(0xFF2E7D32), size: 28),
-                  SizedBox(width: 10),
-                  Text(
-                    '정상적으로 전송되었습니다.',
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-                  ),
-                ],
+        builder: (ctx) => AlertDialog(
+          title: const Text('출고 완료',
+              style: TextStyle(fontWeight: FontWeight.bold)),
+          content: const Text('정상적으로 출고 등록 및 재고 차감이 완료되었습니다.'),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFA61C24),
+                foregroundColor: Colors.white,
               ),
+              child: const Text('확인'),
             ),
-          );
-        },
+          ],
+        ),
       );
     } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('전송 중 오류 발생: $e')));
-    } finally {
-      if (mounted) setState(() => _isSubmitting = false);
+      if (!mounted) return;
+      setState(() => _isSubmitting = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('출고 전송 중 오류가 발생했습니다: $e')),
+      );
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: const Color(0xFFF8F9FA),
       appBar: AppBar(
-        title: const Text(
-          '자재 출고 등록',
-          style: TextStyle(fontWeight: FontWeight.bold),
-        ),
+        title: const Text('자재 출고 등록',
+            style: TextStyle(fontWeight: FontWeight.bold)),
         backgroundColor: const Color(0xFFA61C24),
         foregroundColor: Colors.white,
       ),
       body: Column(
         children: [
+          // 상단: 거점 선택 (광주 / 본사)
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             color: Colors.white,
             child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  '출고 거점 선택',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                ),
+                Row(
+                  children: ['광주', '본사'].map((wh) {
+                    final isSelected = _selectedWarehouse == wh;
+                    return Padding(
+                      padding: const EdgeInsets.only(left: 8),
+                      child: ChoiceChip(
+                        label: Text(wh),
+                        selected: isSelected,
+                        selectedColor: const Color(0xFFA61C24),
+                        labelStyle: TextStyle(
+                          color: isSelected ? Colors.white : Colors.black87,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        onSelected: (val) {
+                          if (val && _selectedWarehouse != wh) {
+                            if (_cart.isNotEmpty) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('장바구니가 초기화된 후 거점이 변경됩니다.'),
+                                ),
+                              );
+                              setState(() {
+                                _cart.clear();
+                                _selectedWarehouse = wh;
+                              });
+                            } else {
+                              setState(() => _selectedWarehouse = wh);
+                            }
+                          }
+                        },
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+
+          // 진입 버튼 영역 (목록 선택 / 바코드 스캔)
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
               children: [
                 Expanded(
                   child: ElevatedButton.icon(
-                    onPressed: _openScannerModal,
-                    icon: const Icon(Icons.qr_code_scanner, size: 22),
-                    label: const Text(
-                      'QR 스캔',
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
+                    onPressed: _openItemListModal,
+                    icon: const Icon(Icons.list_alt, size: 20),
+                    label: const Text('목록 선택',
+                        style: TextStyle(fontWeight: FontWeight.bold)),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFFA61C24),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      backgroundColor: const Color(0xFF2C3E50),
                       foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 12),
                       shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
-                      ),
+                          borderRadius: BorderRadius.circular(10)),
                     ),
                   ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: _openManualListModal,
-                    icon: const Icon(Icons.list_alt, size: 22),
-                    label: const Text(
-                      '목록 선택',
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: const Color(0xFF2C3E50),
-                      side: const BorderSide(
-                        color: Color(0xFF2C3E50),
-                        width: 1.5,
-                      ),
-                      padding: const EdgeInsets.symmetric(vertical: 12),
+                  child: ElevatedButton.icon(
+                    onPressed: _openScannerModal,
+                    icon: const Icon(Icons.qr_code_scanner, size: 20),
+                    label: const Text('QR 스캔',
+                        style: TextStyle(fontWeight: FontWeight.bold)),
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      backgroundColor: const Color(0xFFA61C24),
+                      foregroundColor: Colors.white,
                       shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
-                      ),
+                          borderRadius: BorderRadius.circular(10)),
                     ),
                   ),
                 ),
               ],
             ),
           ),
+
+          // 출고 장바구니 리스트 헤더
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
+            padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
-                  '출고 대기 목록 (${_cart.length}개 항목)',
+                  '출고 담기 목록 (${_cart.length}종 / 총 $_totalItemCount개)',
                   style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 15,
-                  ),
+                      fontWeight: FontWeight.bold, fontSize: 14),
                 ),
                 if (_cart.isNotEmpty)
                   TextButton(
                     onPressed: () => setState(() => _cart.clear()),
-                    child: const Text(
-                      '전체 비우기',
-                      style: TextStyle(color: Colors.red, fontSize: 13),
-                    ),
+                    child: const Text('전체 비우기',
+                        style: TextStyle(color: Colors.red, fontSize: 12)),
                   ),
               ],
             ),
           ),
+
+          // 장바구니 목록
           Expanded(
-            child: Container(
-              color: const Color(0xFFF5F6F8),
-              child: _cart.isEmpty
-                  ? const Center(
-                      child: Text(
-                        '등록된 자재가 없습니다.\n상단의 [QR 스캔] 또는 [목록 선택]을 누르세요.',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.grey, fontSize: 14),
-                      ),
-                    )
-                  : ListView.separated(
-                      controller: _listScrollController, // 컨트롤러 연결 완료
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 6,
-                      ),
-                      itemCount: _cart.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 8),
-                      itemBuilder: (ctx, index) {
-                        final item = _cart[index];
-                        return Card(
-                          elevation: 1.5,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10),
-                            side: BorderSide(
-                              color: item.isConfirmed
-                                  ? const Color(0xFF2E7D32)
-                                  : Colors.transparent,
-                              width: 1.2,
-                            ),
-                          ),
-                          child: Padding(
-                            padding: const EdgeInsets.all(12.0),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
+            child: _cart.isEmpty
+                ? Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.shopping_cart_outlined,
+                            size: 54, color: Colors.grey[400]),
+                        const SizedBox(height: 12),
+                        Text(
+                          '[$_selectedWarehouse 창고] 담긴 출고 자재가 없습니다.\n위의 [목록 선택] 또는 [QR 스캔]을 눌러 추가하세요.',
+                          textAlign: TextAlign.center,
+                          style:
+                              TextStyle(color: Colors.grey[600], fontSize: 13),
+                        ),
+                      ],
+                    ),
+                  )
+                : ListView.separated(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: _cart.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 10),
+                    itemBuilder: (ctx, index) {
+                      final item = _cart[index];
+                      return Card(
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10)),
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 6,
-                                        vertical: 2,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: item.requiresSerial
-                                            ? const Color(0xFFF39800)
-                                            : const Color(0xFFA61C24),
-                                        borderRadius: BorderRadius.circular(4),
-                                      ),
-                                      child: Text(
-                                        item.requiresSerial ? 'SKT시리얼' : '일반자재',
-                                        style: const TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.bold,
-                                        ),
+                                    Text(
+                                      item.materialName,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 14,
                                       ),
                                     ),
-                                    const SizedBox(width: 6),
-                                    if (item.isConfirmed &&
-                                        !item.requiresSerial)
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 6,
-                                          vertical: 2,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: const Color(0xFFE8F5E9),
-                                          borderRadius:
-                                              BorderRadius.circular(4),
-                                        ),
-                                        child: const Text(
-                                          '수량확정됨',
-                                          style: TextStyle(
-                                            color: Color(0xFF2E7D32),
-                                            fontSize: 10,
-                                            fontWeight: FontWeight.bold,
-                                          ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      '코드: ${item.materialCode}',
+                                      style: TextStyle(
+                                          fontSize: 11,
+                                          color: Colors.grey[600]),
+                                    ),
+                                    if (item.requiresSerial) ...[
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        'S/N: ${item.sktSerials.join(', ')}',
+                                        style: const TextStyle(
+                                          fontSize: 11,
+                                          color: Color(0xFFA61C24),
+                                          fontWeight: FontWeight.w600,
                                         ),
                                       ),
-                                    const Spacer(),
+                                    ],
+                                  ],
+                                ),
+                              ),
+                              Row(
+                                children: [
+                                  if (!item.requiresSerial) ...[
                                     IconButton(
                                       icon: const Icon(
-                                        Icons.close,
-                                        size: 20,
-                                        color: Colors.grey,
+                                          Icons.remove_circle_outline,
+                                          size: 20),
+                                      onPressed: () {
+                                        setState(() {
+                                          if (item.quantity > 1) {
+                                            item.quantity--;
+                                          } else {
+                                            _cart.removeAt(index);
+                                          }
+                                        });
+                                      },
+                                    ),
+                                    Text(
+                                      '${item.quantity}',
+                                      style: const TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 15),
+                                    ),
+                                    IconButton(
+                                      icon: const Icon(Icons.add_circle_outline,
+                                          size: 20),
+                                      onPressed: () {
+                                        setState(() => item.quantity++);
+                                      },
+                                    ),
+                                  ] else ...[
+                                    Text(
+                                      '${item.quantity}대',
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 15,
+                                        color: Color(0xFFA61C24),
                                       ),
-                                      onPressed: () =>
-                                          setState(() => _cart.removeAt(index)),
                                     ),
                                   ],
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  item.materialName,
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 14,
-                                  ),
-                                ),
-                                Text(
-                                  '자재코드: ${item.materialCode}',
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.grey,
-                                  ),
-                                ),
-                                if (item.requiresSerial &&
-                                    item.sktSerials.isNotEmpty) ...[
-                                  const SizedBox(height: 8),
-                                  Container(
-                                    width: double.infinity,
-                                    padding: const EdgeInsets.all(8),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFFFFF8E1),
-                                      borderRadius: BorderRadius.circular(6),
-                                      border: Border.all(
-                                          color: const Color(0xFFFFE082)),
-                                    ),
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Row(
-                                          mainAxisAlignment:
-                                              MainAxisAlignment.spaceBetween,
-                                          children: [
-                                            const Text(
-                                              '등록된 SKT 시리얼 목록',
-                                              style: TextStyle(
-                                                fontSize: 11,
-                                                fontWeight: FontWeight.bold,
-                                                color: Color(0xFFE65100),
-                                              ),
-                                            ),
-                                            Text(
-                                              '총 ${item.sktSerials.length}대',
-                                              style: const TextStyle(
-                                                fontSize: 11,
-                                                fontWeight: FontWeight.bold,
-                                                color: Color(0xFFE65100),
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                        const SizedBox(height: 6),
-                                        Wrap(
-                                          spacing: 6,
-                                          runSpacing: 6,
-                                          children: item.sktSerials
-                                              .asMap()
-                                              .entries
-                                              .map((entry) {
-                                            final idx = entry.key;
-                                            final serial = entry.value;
-                                            return Container(
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                      horizontal: 8,
-                                                      vertical: 3),
-                                              decoration: BoxDecoration(
-                                                color: Colors.white,
-                                                borderRadius:
-                                                    BorderRadius.circular(4),
-                                                border: Border.all(
-                                                    color:
-                                                        Colors.grey.shade300),
-                                              ),
-                                              child: Text(
-                                                '${idx + 1}. $serial',
-                                                style: const TextStyle(
-                                                  fontSize: 12,
-                                                  color: Colors.black87,
-                                                  fontWeight: FontWeight.w600,
-                                                ),
-                                              ),
-                                            );
-                                          }).toList(),
-                                        ),
-                                      ],
-                                    ),
+                                  IconButton(
+                                    icon: const Icon(Icons.delete_outline,
+                                        color: Colors.grey, size: 20),
+                                    onPressed: () =>
+                                        setState(() => _cart.removeAt(index)),
                                   ),
                                 ],
-                                const Divider(height: 16),
-                                Row(
-                                  mainAxisAlignment:
-                                      MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    if (!item.requiresSerial)
-                                      item.isConfirmed
-                                          ? OutlinedButton.icon(
-                                              onPressed: () => setState(
-                                                () => item.isConfirmed = false,
-                                              ),
-                                              icon: const Icon(
-                                                Icons.edit,
-                                                size: 14,
-                                              ),
-                                              label: const Text(
-                                                '수량 수정',
-                                                style: TextStyle(fontSize: 12),
-                                              ),
-                                              style: OutlinedButton.styleFrom(
-                                                foregroundColor:
-                                                    Colors.blueGrey,
-                                              ),
-                                            )
-                                          : ElevatedButton.icon(
-                                              onPressed: () => setState(
-                                                () => item.isConfirmed = true,
-                                              ),
-                                              icon: const Icon(
-                                                Icons.check,
-                                                size: 14,
-                                              ),
-                                              label: const Text(
-                                                '수량 확정',
-                                                style: TextStyle(
-                                                  fontSize: 12,
-                                                  fontWeight: FontWeight.bold,
-                                                ),
-                                              ),
-                                              style: ElevatedButton.styleFrom(
-                                                backgroundColor: const Color(
-                                                  0xFF2E7D32,
-                                                ),
-                                                foregroundColor: Colors.white,
-                                              ),
-                                            )
-                                    else
-                                      Text(
-                                        '총 ${item.sktSerials.length}대 묶음 등록',
-                                        style: const TextStyle(
-                                          fontSize: 12,
-                                          color: Color(0xFFE65100),
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                    Row(
-                                      children: [
-                                        const Text(
-                                          '수량: ',
-                                          style: TextStyle(
-                                            fontSize: 13,
-                                            fontWeight: FontWeight.w500,
-                                          ),
-                                        ),
-                                        if (!item.requiresSerial) ...[
-                                          IconButton(
-                                            icon: Icon(
-                                              Icons.remove_circle_outline,
-                                              size: 20,
-                                              color: item.isConfirmed
-                                                  ? Colors.grey[300]
-                                                  : Colors.black87,
-                                            ),
-                                            onPressed: item.isConfirmed
-                                                ? null
-                                                : () {
-                                                    if (item.quantity > 1) {
-                                                      setState(
-                                                        () =>
-                                                            item.quantity -= 1,
-                                                      );
-                                                    }
-                                                  },
-                                          ),
-                                          InkWell(
-                                            onTap: () =>
-                                                _showQuantityInputDialog(item),
-                                            borderRadius: BorderRadius.circular(
-                                              6,
-                                            ),
-                                            child: Container(
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                horizontal: 10,
-                                                vertical: 4,
-                                              ),
-                                              decoration: BoxDecoration(
-                                                color: Colors.grey[100],
-                                                borderRadius:
-                                                    BorderRadius.circular(6),
-                                                border: Border.all(
-                                                  color: Colors.grey[300]!,
-                                                ),
-                                              ),
-                                              child: Text(
-                                                '${item.quantity}',
-                                                style: TextStyle(
-                                                  fontSize: 16,
-                                                  fontWeight: FontWeight.bold,
-                                                  color: item.isConfirmed
-                                                      ? const Color(0xFF2E7D32)
-                                                      : const Color(0xFFA61C24),
-                                                ),
-                                              ),
-                                            ),
-                                          ),
-                                          IconButton(
-                                            icon: Icon(
-                                              Icons.add_circle_outline,
-                                              size: 20,
-                                              color: item.isConfirmed
-                                                  ? Colors.grey[300]
-                                                  : Colors.black87,
-                                            ),
-                                            onPressed: item.isConfirmed
-                                                ? null
-                                                : () => setState(
-                                                      () => item.quantity += 1,
-                                                    ),
-                                          ),
-                                        ] else ...[
-                                          Text(
-                                            '${item.sktSerials.length} EA',
-                                            style: const TextStyle(
-                                              fontSize: 14,
-                                              fontWeight: FontWeight.bold,
-                                              color: Color(0xFFF39800),
-                                            ),
-                                          ),
-                                        ],
-                                      ],
-                                    ),
-                                  ],
-                                ),
-                              ],
-                            ),
+                              ),
+                            ],
                           ),
-                        );
-                      },
-                    ),
-            ),
+                        ),
+                      );
+                    },
+                  ),
           ),
+
+          // 하단: 출고 전송 완료 버튼
           SafeArea(
-            top: false,
-            bottom: true,
             child: Container(
-              padding: const EdgeInsets.fromLTRB(16, 10, 16, 20),
-              decoration: const BoxDecoration(
-                color: Colors.white,
-                border: Border(top: BorderSide(color: Color(0xFFEEEEEE))),
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              color: Colors.white,
               child: SizedBox(
                 width: double.infinity,
-                height: 52,
+                height: 48,
                 child: ElevatedButton(
-                  onPressed: _isSubmitting || _cart.isEmpty ? null : _submitOut,
+                  onPressed:
+                      (_cart.isEmpty || _isSubmitting) ? null : _submitOut,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFFA61C24),
                     foregroundColor: Colors.white,
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    elevation: 3,
+                        borderRadius: BorderRadius.circular(10)),
                   ),
                   child: _isSubmitting
-                      ? const CircularProgressIndicator(color: Colors.white)
+                      ? const SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(
+                              color: Colors.white, strokeWidth: 2),
+                        )
                       : Text(
-                          '출고 전송 완료 (총 ${_cart.length}개 항목)',
+                          _cart.isEmpty
+                              ? '출고할 자재를 담아주세요'
+                              : '출고 전송 완료 ($_totalItemCount개 확정)',
                           style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
+                              fontWeight: FontWeight.bold, fontSize: 16),
                         ),
                 ),
               ),
@@ -803,15 +528,576 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
 }
 
 // ------------------------------------------------------------
+// 대분류/소분류/규격 선택 및 관리자 메모 바텀시트 모달
+// ------------------------------------------------------------
+class _CategoryItemSelectModal extends StatefulWidget {
+  final String selectedWarehouse;
+  final UserModel currentUser;
+  final Function(List<OutItem>) onItemsAdded;
+
+  const _CategoryItemSelectModal({
+    required this.selectedWarehouse,
+    required this.currentUser,
+    required this.onItemsAdded,
+  });
+
+  @override
+  State<_CategoryItemSelectModal> createState() =>
+      _CategoryItemSelectModalState();
+}
+
+class _CategoryItemSelectModalState extends State<_CategoryItemSelectModal> {
+  String? _selectedCat1;
+  String? _selectedCat2;
+  final Map<String, int> _quantities = {};
+
+  bool _isMessageMode = false;
+  final TextEditingController _msgController = TextEditingController();
+  bool _isSendingMsg = false;
+
+  @override
+  void dispose() {
+    _msgController.dispose();
+    super.dispose();
+  }
+
+  // 관리자에게 요청/건의 메시지 전송 (Firebase user_requests에 등록)
+  Future<void> _sendAdminMessage() async {
+    final text = _msgController.text.trim();
+    if (text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('메시지 내용을 입력하세요.')),
+      );
+      return;
+    }
+
+    setState(() => _isSendingMsg = true);
+    try {
+      final now = DateTime.now();
+      final dateStr =
+          '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+      final timeStr =
+          '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
+
+      await FirebaseFirestore.instance.collection('user_requests').add({
+        'timestamp': FieldValue.serverTimestamp(),
+        'date': dateStr,
+        'time': timeStr,
+        'warehouse': widget.selectedWarehouse,
+        'userName': widget.currentUser.name,
+        'team': widget.currentUser.team,
+        'phone': widget.currentUser.phone,
+        'category1': _selectedCat1 ?? '',
+        'category2': _selectedCat2 ?? '',
+        'message': text,
+        'status': '미확인',
+      });
+
+      if (!mounted) return;
+      setState(() {
+        _isSendingMsg = false;
+        _msgController.clear();
+        _isMessageMode = false;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('관리자에게 메시지가 성공적으로 전송되었습니다.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isSendingMsg = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('전송 중 오류: $e')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final totalSelectedCount = _quantities.values.fold(0, (sum, q) => sum + q);
+
+    return Container(
+      height: MediaQuery.of(context).size.height * 0.85,
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      child: StreamBuilder<QuerySnapshot>(
+        stream: FirebaseFirestore.instance.collection('materials').snapshots(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+            return const Center(child: Text('등록된 자재 목록이 없습니다.'));
+          }
+
+          // 해당 거점 자재 필터링
+          final materials = snapshot.data!.docs.map((doc) {
+            final data = doc.data() as Map<String, dynamic>;
+            data['docId'] = doc.id;
+            return data;
+          }).where((m) {
+            final wh = (m['warehouse'] ?? '').toString();
+            return wh.isEmpty || wh == widget.selectedWarehouse;
+          }).toList();
+
+          // 대분류 목록 추출
+          final cat1Set = <String>{};
+          for (var m in materials) {
+            final c1 = (m['category1'] ?? m['분류1'] ?? '').toString().trim();
+            if (c1.isNotEmpty) cat1Set.add(c1);
+          }
+          final cat1List = cat1Set.toList()..sort();
+
+          if (_selectedCat1 == null && cat1List.isNotEmpty) {
+            _selectedCat1 = cat1List.first;
+          }
+
+          // 소분류 목록 추출
+          final cat2Set = <String>{};
+          for (var m in materials) {
+            final c1 = (m['category1'] ?? m['분류1'] ?? '').toString().trim();
+            final c2 = (m['category2'] ?? m['분류2'] ?? '').toString().trim();
+            if (c1 == _selectedCat1 && c2.isNotEmpty) {
+              cat2Set.add(c2);
+            }
+          }
+          final cat2List = cat2Set.toList()..sort();
+
+          if ((_selectedCat2 == null || !cat2List.contains(_selectedCat2)) &&
+              cat2List.isNotEmpty) {
+            _selectedCat2 = cat2List.first;
+          }
+
+          // 선택된 대/소분류에 속한 자재 리스트
+          final filteredMaterials = materials.where((m) {
+            final c1 = (m['category1'] ?? m['분류1'] ?? '').toString().trim();
+            final c2 = (m['category2'] ?? m['분류2'] ?? '').toString().trim();
+            return c1 == _selectedCat1 && c2 == _selectedCat2;
+          }).toList();
+
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // 모달 상단 타이틀 & 닫기
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      '자재 규격 선택 (${widget.selectedWarehouse})',
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 17),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: () => Navigator.pop(context),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+
+                // 대분류 / 소분류 선택 드롭다운
+                Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        value: _selectedCat1,
+                        isExpanded: true,
+                        decoration: const InputDecoration(
+                          labelText: '대분류 (분류1)',
+                          contentPadding:
+                              EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                          border: OutlineInputBorder(),
+                        ),
+                        items: cat1List.map((c) {
+                          return DropdownMenuItem(
+                              value: c,
+                              child: Text(c, overflow: TextOverflow.ellipsis));
+                        }).toList(),
+                        onChanged: (val) {
+                          setState(() {
+                            _selectedCat1 = val;
+                            _selectedCat2 = null;
+                            _quantities.clear();
+                          });
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        value: _selectedCat2,
+                        isExpanded: true,
+                        decoration: const InputDecoration(
+                          labelText: '소분류 (분류2)',
+                          contentPadding:
+                              EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                          border: OutlineInputBorder(),
+                        ),
+                        items: cat2List.map((c) {
+                          return DropdownMenuItem(
+                              value: c,
+                              child: Text(c, overflow: TextOverflow.ellipsis));
+                        }).toList(),
+                        onChanged: (val) {
+                          setState(() {
+                            _selectedCat2 = val;
+                            _quantities.clear();
+                          });
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+
+                // 관리자 메시지 모드 토글 바
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.grey[100],
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        _isMessageMode ? '관리자 건의/요청 작성 모드' : '규격별 수량 선택',
+                        style: const TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 13),
+                      ),
+                      TextButton.icon(
+                        icon: Icon(
+                            _isMessageMode ? Icons.list : Icons.edit_note,
+                            size: 18),
+                        label: Text(_isMessageMode ? '목록으로' : '관리자에게 건의'),
+                        onPressed: () {
+                          setState(() => _isMessageMode = !_isMessageMode);
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+
+                // 중앙 콘텐츠 (규격 목록 vs 메시지 입력창)
+                Expanded(
+                  child: _isMessageMode
+                      ? SingleChildScrollView(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                '자재 요청 및 관리자 건의사항',
+                                style: TextStyle(
+                                    fontWeight: FontWeight.bold, fontSize: 14),
+                              ),
+                              const SizedBox(height: 6),
+                              TextField(
+                                controller: _msgController,
+                                maxLines: 5,
+                                decoration: InputDecoration(
+                                  hintText:
+                                      '필요한 자재 품명, 규격, 요청 수량 및 전달사항을 적어주시면 엑셀 [요청사항] 시트로 자동 전달됩니다.',
+                                  hintStyle: TextStyle(
+                                      color: Colors.grey[400], fontSize: 13),
+                                  border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(8)),
+                                ),
+                              ),
+                            ],
+                          ),
+                        )
+                      : filteredMaterials.isEmpty
+                          ? const Center(child: Text('해당 분류에 속한 자재가 없습니다.'))
+                          : ListView.separated(
+                              itemCount: filteredMaterials.length,
+                              separatorBuilder: (_, __) =>
+                                  const Divider(height: 1),
+                              itemBuilder: (context, idx) {
+                                final mat = filteredMaterials[idx];
+                                final code = (mat['materialCode'] ??
+                                        mat['F2자재코드'] ??
+                                        mat['docId'])
+                                    .toString();
+                                final name =
+                                    (mat['materialName'] ?? mat['품명'] ?? '')
+                                        .toString();
+                                final spec =
+                                    (mat['spec'] ?? mat['규격'] ?? '').toString();
+
+                                final rawStock =
+                                    mat['currentStock'] ?? mat['현재고'] ?? 0;
+                                final int stock = rawStock is num
+                                    ? rawStock.toInt()
+                                    : (int.tryParse(rawStock.toString()) ?? 0);
+                                final currentQty = _quantities[code] ?? 0;
+
+                                return Padding(
+                                  padding:
+                                      const EdgeInsets.symmetric(vertical: 6),
+                                  child: Row(
+                                    children: [
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            // 1행: 품명(D열) + 재고 뱃지
+                                            Row(
+                                              children: [
+                                                Flexible(
+                                                  child: Text(
+                                                    name.isNotEmpty
+                                                        ? name
+                                                        : spec,
+                                                    style: const TextStyle(
+                                                      fontWeight:
+                                                          FontWeight.bold,
+                                                      fontSize: 14,
+                                                      color: Color(0xFF1E293B),
+                                                    ),
+                                                  ),
+                                                ),
+                                                const SizedBox(width: 8),
+                                                Container(
+                                                  padding: const EdgeInsets
+                                                      .symmetric(
+                                                      horizontal: 6,
+                                                      vertical: 2),
+                                                  decoration: BoxDecoration(
+                                                    color: stock > 0
+                                                        ? const Color(
+                                                            0xFFE8F5E9)
+                                                        : const Color(
+                                                            0xFFFFEBEE),
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                            4),
+                                                  ),
+                                                  child: Text(
+                                                    '재고: $stock',
+                                                    style: TextStyle(
+                                                      fontSize: 11,
+                                                      fontWeight:
+                                                          FontWeight.bold,
+                                                      color: stock > 0
+                                                          ? const Color(
+                                                              0xFF2E7D32)
+                                                          : Colors.red,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                            const SizedBox(height: 3),
+                                            // 2행: 규격(E열) + 회색 자재코드
+                                            Row(
+                                              children: [
+                                                if (spec.isNotEmpty) ...[
+                                                  Flexible(
+                                                    child: Text(
+                                                      spec,
+                                                      style: const TextStyle(
+                                                        fontSize: 12,
+                                                        color: Colors.black87,
+                                                        fontWeight:
+                                                            FontWeight.w500,
+                                                      ),
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
+                                                    ),
+                                                  ),
+                                                  const SizedBox(width: 8),
+                                                ],
+                                                Text(
+                                                  '코드: $code',
+                                                  style: TextStyle(
+                                                    fontSize: 11,
+                                                    color: Colors.grey[600],
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      // 수량 증감 버튼
+                                      Row(
+                                        children: [
+                                          IconButton(
+                                            icon: const Icon(
+                                                Icons.remove_circle_outline,
+                                                size: 22),
+                                            color: currentQty > 0
+                                                ? Colors.red
+                                                : Colors.grey[300],
+                                            onPressed: currentQty > 0
+                                                ? () {
+                                                    setState(() {
+                                                      _quantities[code] =
+                                                          currentQty - 1;
+                                                    });
+                                                  }
+                                                : null,
+                                          ),
+                                          Container(
+                                            alignment: Alignment.center,
+                                            width: 32,
+                                            child: Text(
+                                              '$currentQty',
+                                              style: TextStyle(
+                                                fontSize: 15,
+                                                fontWeight: FontWeight.bold,
+                                                color: currentQty > 0
+                                                    ? const Color(0xFFA61C24)
+                                                    : Colors.black,
+                                              ),
+                                            ),
+                                          ),
+                                          IconButton(
+                                            icon: const Icon(
+                                                Icons.add_circle_outline,
+                                                size: 22),
+                                            color: const Color(0xFFA61C24),
+                                            onPressed: () {
+                                              setState(() {
+                                                _quantities[code] =
+                                                    currentQty + 1;
+                                              });
+                                            },
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              },
+                            ),
+                ),
+
+                // 하단 버튼부
+                SafeArea(
+                  child: SizedBox(
+                    width: double.infinity,
+                    height: 48,
+                    child: _isMessageMode
+                        ? ElevatedButton.icon(
+                            onPressed: _isSendingMsg ? null : _sendAdminMessage,
+                            icon: const Icon(Icons.send, size: 18),
+                            label: _isSendingMsg
+                                ? const SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(
+                                      color: Colors.white,
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Text(
+                                    '관리자에게 메시지 전송',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 15,
+                                    ),
+                                  ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF2C3E50),
+                              foregroundColor: Colors.white,
+                            ),
+                          )
+                        : ElevatedButton(
+                            onPressed: totalSelectedCount == 0
+                                ? null
+                                : () {
+                                    List<OutItem> itemsToAdd = [];
+                                    _quantities.forEach((code, qty) {
+                                      if (qty > 0) {
+                                        final target = materials.firstWhere(
+                                          (m) =>
+                                              (m['materialCode'] ??
+                                                  m['F2자재코드'] ??
+                                                  m['docId']) ==
+                                              code,
+                                          orElse: () => {},
+                                        );
+
+                                        final matName =
+                                            (target['materialName'] ??
+                                                    target['품명'] ??
+                                                    '')
+                                                .toString();
+                                        final spec = (target['spec'] ??
+                                                target['규격'] ??
+                                                '')
+                                            .toString();
+
+                                        String displayName = matName;
+                                        if (spec.isNotEmpty &&
+                                            spec != matName) {
+                                          displayName = matName.isNotEmpty
+                                              ? '$matName ($spec)'
+                                              : spec;
+                                        }
+                                        if (displayName.isEmpty) {
+                                          displayName = code;
+                                        }
+
+                                        itemsToAdd.add(OutItem(
+                                          materialCode: code,
+                                          materialName: displayName,
+                                          quantity: qty,
+                                          requiresSerial: false,
+                                          isConfirmed: true,
+                                        ));
+                                      }
+                                    });
+
+                                    widget.onItemsAdded(itemsToAdd);
+                                    Navigator.pop(context);
+                                  },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFFA61C24),
+                              foregroundColor: Colors.white,
+                            ),
+                            child: Text(
+                              totalSelectedCount == 0
+                                  ? '수량을 선택하세요'
+                                  : '선택한 자재 장바구니에 담기 (총 $totalSelectedCount개 품목)',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 15,
+                              ),
+                            ),
+                          ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+// ------------------------------------------------------------
 // 모달 카메라 스캐너 위젯
 // ------------------------------------------------------------
 class _ScannerModalSheet extends StatefulWidget {
-  final Function(List<OutItem>) onItemsScanned;
+  final String selectedWarehouse;
   final List<String> existingSerials;
+  final Function(List<OutItem>) onItemsScanned;
 
   const _ScannerModalSheet({
-    required this.onItemsScanned,
+    required this.selectedWarehouse,
     required this.existingSerials,
+    required this.onItemsScanned,
   });
 
   @override
@@ -819,389 +1105,172 @@ class _ScannerModalSheet extends StatefulWidget {
 }
 
 class _ScannerModalSheetState extends State<_ScannerModalSheet> {
-  final MobileScannerController _controller = MobileScannerController();
-  final List<String> _sessionSerials = [];
-
-  bool _isWaitingSktSerial = false;
-  String? _activeMatCode;
-  String? _activeMatName;
+  final MobileScannerController _scannerController = MobileScannerController();
+  final List<OutItem> _scannedList = [];
   bool _isProcessing = false;
-
-  // 조준창 크기 (정사각형 280 x 280)
-  final double _scanWindowSize = 280.0;
-  final double _scanWindowTop = 70.0;
 
   @override
   void dispose() {
-    _controller.dispose(); // 카메라 컨트롤러만 정리 (불필요한 _listScrollController 제거)
+    _scannerController.dispose();
     super.dispose();
-  }
-
-  void _vibrate() {
-    HapticFeedback.heavyImpact();
-    HapticFeedback.vibrate();
   }
 
   void _onDetect(BarcodeCapture capture) async {
     if (_isProcessing) return;
-    final barcode = capture.barcodes.firstOrNull;
-    if (barcode == null || barcode.rawValue == null) return;
+    final barcode = capture.barcodes.firstOrNull?.rawValue?.trim();
+    if (barcode == null || barcode.isEmpty) return;
 
-    final rawValue = barcode.rawValue!.trim();
-    if (rawValue.isEmpty) return;
+    setState(() => _isProcessing = true);
 
-    // 1. SKT 시리얼 스캔 대기 모드
-    if (_isWaitingSktSerial) {
-      if (rawValue.contains('#SN') || rawValue == _activeMatCode) {
-        return;
-      }
-
-      try {
-        final checkDoc = await FirebaseFirestore.instance
-            .collection('materials')
-            .doc(rawValue)
-            .get();
-        if (checkDoc.exists) {
-          return;
-        }
-      } catch (_) {}
-
-      if (widget.existingSerials.contains(rawValue) ||
-          _sessionSerials.contains(rawValue)) {
-        return;
-      }
-
-      _vibrate();
-      _isProcessing = true;
-
-      setState(() {
-        _sessionSerials.add(rawValue);
-      });
-
-      await Future.delayed(const Duration(milliseconds: 900));
-      _isProcessing = false;
-      return;
-    }
-
-    // 2. F2 자재 QR 스캔 모드
-    _isProcessing = true;
-
-    bool isSerialItem = false;
-    String cleanMatCode = rawValue;
-    if (rawValue.contains('#SN')) {
-      isSerialItem = true;
-      cleanMatCode = rawValue.replaceAll('#SN', '').trim();
-    }
-
-    String? fetchedName;
     try {
-      final doc = await FirebaseFirestore.instance
+      // Firebase materials 조회
+      final snap = await FirebaseFirestore.instance
           .collection('materials')
-          .doc(cleanMatCode)
+          .doc(barcode)
           .get();
-      if (doc.exists && doc.data() != null) {
-        fetchedName = doc.data()!['materialName'] ?? '품명 없음';
-        if (doc.data()!['requiresSerial'] == true) {
-          isSerialItem = true;
-        }
+
+      if (!snap.exists) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('등록되지 않은 자재코드입니다: $barcode')),
+        );
+        await Future.delayed(const Duration(seconds: 1));
+        setState(() => _isProcessing = false);
+        return;
       }
-    } catch (_) {}
 
-    if (fetchedName == null && !rawValue.contains('#SN')) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('⚠️ 미등록 코드: $rawValue\n반드시 F2 자재 QR코드를 먼저 스캔하세요.'),
-          backgroundColor: Colors.red,
-          duration: const Duration(seconds: 2),
-        ),
-      );
-      await Future.delayed(const Duration(milliseconds: 1500));
-      _isProcessing = false;
-      return;
-    }
+      final data = snap.data()!;
+      final name = (data['materialName'] ?? data['품명'] ?? barcode).toString();
+      final reqSerial = data['requiresSerial'] == true;
 
-    _vibrate();
-    final finalMatName = fetchedName ?? cleanMatCode;
-
-    if (isSerialItem) {
-      setState(() {
-        _activeMatCode = cleanMatCode;
-        _activeMatName = finalMatName;
-        _isWaitingSktSerial = true;
-      });
-      await Future.delayed(const Duration(milliseconds: 1000));
-      _isProcessing = false;
-    } else {
-      widget.onItemsScanned([
-        OutItem(
-          materialCode: cleanMatCode,
-          materialName: finalMatName,
+      final existingIdx =
+          _scannedList.indexWhere((it) => it.materialCode == barcode);
+      if (existingIdx >= 0) {
+        _scannedList[existingIdx].quantity++;
+      } else {
+        _scannedList.add(OutItem(
+          materialCode: barcode,
+          materialName: name,
           quantity: 1,
-          requiresSerial: false,
-          isConfirmed: false,
-        ),
-      ]);
-      Navigator.pop(context);
-    }
-  }
-
-  void _finishSerialSession() {
-    if (_activeMatCode != null && _sessionSerials.isNotEmpty) {
-      widget.onItemsScanned([
-        OutItem(
-          materialCode: _activeMatCode!,
-          materialName: _activeMatName!,
-          quantity: _sessionSerials.length,
-          sktSerials: List<String>.from(_sessionSerials),
-          requiresSerial: true,
+          requiresSerial: reqSerial,
           isConfirmed: true,
-        ),
-      ]);
+        ));
+      }
+
+      setState(() {});
+      await Future.delayed(const Duration(milliseconds: 800));
+    } catch (e) {
+      // ignore
+    } finally {
+      if (mounted) setState(() => _isProcessing = false);
     }
-    Navigator.pop(context);
   }
 
   @override
   Widget build(BuildContext context) {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final modalHeight = MediaQuery.of(context).size.height * 0.88;
-
-    final scanWindow = Rect.fromLTWH(
-      (screenWidth - _scanWindowSize) / 2,
-      _scanWindowTop,
-      _scanWindowSize,
-      _scanWindowSize,
-    );
-
     return Container(
-      height: modalHeight,
+      height: MediaQuery.of(context).size.height * 0.85,
       decoration: const BoxDecoration(
-        color: Colors.black,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      child: Stack(
-        alignment: Alignment.center,
+      child: Column(
         children: [
-          MobileScanner(
-            controller: _controller,
-            scanWindow: scanWindow,
-            onDetect: _onDetect,
-          ),
-          Positioned(
-            top: _scanWindowTop,
-            child: Container(
-              width: _scanWindowSize,
-              height: _scanWindowSize,
-              decoration: BoxDecoration(
-                border: Border.all(
-                  color: _isWaitingSktSerial
-                      ? const Color(0xFFF39800)
-                      : Colors.white,
-                  width: 3.0,
-                ),
-                borderRadius: BorderRadius.circular(16),
-              ),
-            ),
-          ),
-          Positioned(
-            top: 14,
-            left: 16,
-            right: 16,
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
+                const Text('QR/바코드 스캔',
+                    style:
+                        TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
                 IconButton(
-                  icon: const Icon(
-                    Icons.flash_on,
-                    color: Colors.white,
-                    size: 28,
-                  ),
-                  onPressed: () => _controller.toggleTorch(),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.close, color: Colors.white, size: 30),
-                  onPressed: () {
-                    _finishSerialSession();
-                  },
+                  icon: const Icon(Icons.close),
+                  onPressed: () => Navigator.pop(context),
                 ),
               ],
             ),
           ),
-          Positioned(
-            top: _scanWindowTop + _scanWindowSize + 16,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              decoration: BoxDecoration(
-                color: _isWaitingSktSerial
-                    ? const Color(0xFFF39800)
-                    : Colors.black.withOpacity(0.75),
-                borderRadius: BorderRadius.circular(20),
-                boxShadow: const [
-                  BoxShadow(color: Colors.black38, blurRadius: 6),
-                ],
+          SizedBox(
+            height: 220,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: MobileScanner(
+                controller: _scannerController,
+                onDetect: _onDetect,
               ),
-              child: Text(
-                _isWaitingSktSerial
-                    ? '[$_activeMatName]\n장비의 SKT 시리얼 QR/바코드를 사각형 안에 맞추세요'
-                    : 'F2 자재 QR코드를 사각형 안에 맞추세요',
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 13,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  '스캔된 품목 (${_scannedList.length}건)',
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 13),
+                ),
+                if (_scannedList.isNotEmpty)
+                  TextButton(
+                    onPressed: () => setState(() => _scannedList.clear()),
+                    child: const Text('비우기',
+                        style: TextStyle(color: Colors.red, fontSize: 12)),
+                  ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: _scannedList.isEmpty
+                ? Center(
+                    child: Text('카메라에 QR코드를 비춰주세요.',
+                        style: TextStyle(color: Colors.grey[500])),
+                  )
+                : ListView.separated(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    itemCount: _scannedList.length,
+                    separatorBuilder: (_, __) => const Divider(height: 1),
+                    itemBuilder: (ctx, idx) {
+                      final item = _scannedList[idx];
+                      return ListTile(
+                        dense: true,
+                        title: Text(item.materialName,
+                            style:
+                                const TextStyle(fontWeight: FontWeight.bold)),
+                        subtitle: Text('코드: ${item.materialCode}'),
+                        trailing: Text('${item.quantity}개',
+                            style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFFA61C24))),
+                      );
+                    },
+                  ),
+          ),
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: ElevatedButton(
+                  onPressed: _scannedList.isEmpty
+                      ? null
+                      : () {
+                          widget.onItemsScanned(_scannedList);
+                          Navigator.pop(context);
+                        },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFA61C24),
+                    foregroundColor: Colors.white,
+                  ),
+                  child: Text('스캔 완료 (${_scannedList.length}건 담기)',
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 15)),
                 ),
               ),
             ),
           ),
-          if (_isWaitingSktSerial)
-            Positioned(
-              top: _scanWindowTop + _scanWindowSize + 76,
-              bottom: 150,
-              left: 20,
-              right: 20,
-              child: Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.75),
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: Colors.white24, width: 1),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text(
-                          '📷 등록된 SKT 시리얼 목록',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 13,
-                          ),
-                        ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 2,
-                          ),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFF39800),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Text(
-                            '총 ${_sessionSerials.length}대',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 11,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const Divider(color: Colors.white24, height: 10),
-                    Expanded(
-                      child: _sessionSerials.isEmpty
-                          ? const Center(
-                              child: Text(
-                                '아직 스캔된 시리얼이 없습니다.\n카메라로 SKT 바코드를 비추세요.',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  color: Colors.white60,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            )
-                          : ListView.builder(
-                              padding: EdgeInsets.zero,
-                              itemCount: _sessionSerials.length,
-                              itemBuilder: (context, idx) {
-                                final serial = _sessionSerials[idx];
-                                return Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                    vertical: 2.0,
-                                  ),
-                                  child: Row(
-                                    children: [
-                                      Text(
-                                        '${idx + 1}. ',
-                                        style: const TextStyle(
-                                          color: Color(0xFFF39800),
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 13,
-                                        ),
-                                      ),
-                                      Expanded(
-                                        child: Text(
-                                          serial,
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 13,
-                                            fontWeight: FontWeight.w500,
-                                          ),
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
-                                      ),
-                                      InkWell(
-                                        onTap: () {
-                                          setState(() {
-                                            _sessionSerials.removeAt(idx);
-                                          });
-                                        },
-                                        borderRadius: BorderRadius.circular(12),
-                                        child: const Padding(
-                                          padding: EdgeInsets.all(4.0),
-                                          child: Icon(
-                                            Icons.close,
-                                            color: Colors.redAccent,
-                                            size: 18,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                );
-                              },
-                            ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          if (_isWaitingSktSerial)
-            Positioned(
-              bottom: 85,
-              left: 24,
-              right: 24,
-              child: SizedBox(
-                height: 48,
-                child: ElevatedButton.icon(
-                  onPressed: _finishSerialSession,
-                  icon: const Icon(
-                    Icons.check_circle,
-                    color: Colors.white,
-                    size: 20,
-                  ),
-                  label: Text(
-                    '스캔 완료 (${_sessionSerials.length}대 묶음 저장)',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                      fontSize: 15,
-                    ),
-                  ),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF2E7D32),
-                    elevation: 5,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(24),
-                    ),
-                  ),
-                ),
-              ),
-            ),
         ],
       ),
     );
