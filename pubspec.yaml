@@ -2,7 +2,7 @@ name: f2_material
 description: "F2 Telecom Material Management App"
 publish_to: 'none'
 
-version: 1.0.5+13
+version: 1.0.6+19
 
 environment:
   sdk: '>=3.1.0 <4.0.0'

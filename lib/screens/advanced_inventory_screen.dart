@@ -1,35 +1,29 @@
 import 'package:flutter/material.dart';
-import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import '../models/user_model.dart';
 
-class AdvancedItem {
+// ------------------------------------------------------------
+// 관리자 입·출고 항목 모델
+// ------------------------------------------------------------
+class AdminInventoryItem {
   final String materialCode;
   final String materialName;
   int quantity;
-  final String actionType; // 'IN' or 'OUT'
-  final String condition; // '신품', '구품', '불량'
-  final String itemType; // '사급' or '지입'
-  String? sktSerial;
-  final bool requiresSerial;
-  bool isConfirmed;
 
-  AdvancedItem({
+  AdminInventoryItem({
     required this.materialCode,
     required this.materialName,
     required this.quantity,
-    required this.actionType,
-    required this.condition,
-    required this.itemType,
-    this.sktSerial,
-    required this.requiresSerial,
-    this.isConfirmed = false,
   });
 }
 
+// ------------------------------------------------------------
+// 관리자 입·출고 종합관리 메인 화면
+// ------------------------------------------------------------
 class AdvancedInventoryScreen extends StatefulWidget {
   final UserModel currentUser;
+
   const AdvancedInventoryScreen({super.key, required this.currentUser});
 
   @override
@@ -38,187 +32,171 @@ class AdvancedInventoryScreen extends StatefulWidget {
 }
 
 class _AdvancedInventoryScreenState extends State<AdvancedInventoryScreen> {
-  final List<AdvancedItem> _cart = [];
-  String _currentAction = 'OUT';
-  String _currentCondition = '신품';
+  // 모드: 'OUT' (관리자 출고 - 차감) / 'IN' (관리자 입고 - 가산)
+  String _mode = 'OUT';
+  // 거점: '광주' / '본사'
+  String _selectedWarehouse = '광주';
+
+  final List<AdminInventoryItem> _itemList = [];
+  final TextEditingController _memoController = TextEditingController();
   bool _isSubmitting = false;
 
-  void _openScannerModal() async {
-    final status = await Permission.camera.request();
-    if (!status.isGranted) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('카메라 사용 권한이 필요합니다.')));
+  // [성능 개선] 화면 생명주기 동안 단 1회만 유지되는 자재 스트림 (Firestore 로컬 캐시 활용)
+  late final Stream<QuerySnapshot> _materialsStream;
+
+  int get _totalQuantity =>
+      _itemList.fold(0, (sum, item) => sum + item.quantity);
+
+  @override
+  void initState() {
+    super.initState();
+    _materialsStream =
+        FirebaseFirestore.instance.collection('materials').snapshots();
+  }
+
+  @override
+  void dispose() {
+    _memoController.dispose();
+    super.dispose();
+  }
+
+  // 자재 추가/합산 공통 함수
+  void _addOrUpdateItem(String code, String name, int qty) {
+    setState(() {
+      final idx = _itemList.indexWhere((it) => it.materialCode == code);
+      if (idx >= 0) {
+        _itemList[idx].quantity += qty;
+      } else {
+        _itemList.add(AdminInventoryItem(
+          materialCode: code,
+          materialName: name,
+          quantity: qty,
+        ));
       }
-      return;
-    }
-
-    if (!mounted) return;
-
-    await showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => Dialog(
-        insetPadding: const EdgeInsets.fromLTRB(16, 40, 16, 20),
-        alignment: Alignment.topCenter,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        clipBehavior: Clip.antiAlias,
-        child: SizedBox(
-          height: MediaQuery.of(context).size.height * 0.65,
-          child: _AdvancedScannerView(
-            currentAction: _currentAction,
-            currentCondition: _currentCondition,
-            existingSerials: _cart
-                .where((i) => i.sktSerial != null)
-                .map((i) => i.sktSerial!)
-                .toList(),
-            onItemsScanned: (newItems) {
-              setState(() {
-                _cart.addAll(newItems);
-              });
-            },
-          ),
-        ),
-      ),
-    );
+    });
   }
 
-  void _openManualListModal() {
-    showModalBottomSheet(
-      context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (ctx) => Container(
-        height: 350,
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text(
-                  '자재 목록 선택',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.close),
-                  onPressed: () => Navigator.pop(ctx),
-                ),
-              ],
-            ),
-            const Divider(),
-            const Expanded(
-              child: Center(
-                child: Text(
-                  '대분류 / 중분류 / 소분류 기반 자재 목록이 이곳에 연결됩니다.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.grey),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _showQuantityInputDialog(AdvancedItem item) {
-    if (item.isConfirmed || item.requiresSerial) return;
-    final controller = TextEditingController(text: '${item.quantity}');
-
-    showDialog(
+  // 메인 리스트에서 숫자 터치 시 직접 수량 입력 다이얼로그 (대량 수량용)
+  Future<void> _editQuantityDirectly(AdminInventoryItem item) async {
+    final textController =
+        TextEditingController(text: item.quantity.toString());
+    final newQty = await showDialog<int>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text(
-          '${item.materialName}\n수량 직접 입력',
-          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-        ),
+        title: Text('${item.materialName}\n수량 직접 입력',
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
         content: TextField(
-          controller: controller,
+          controller: textController,
           keyboardType: TextInputType.number,
           autofocus: true,
           decoration: const InputDecoration(
-            labelText: '수량 (개)',
+            labelText: '처리 수량',
+            suffixText: '개',
             border: OutlineInputBorder(),
           ),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx),
+            onPressed: () => Navigator.pop(ctx, null),
             child: const Text('취소'),
           ),
           ElevatedButton(
             onPressed: () {
-              final val = int.tryParse(controller.text.trim());
+              final val = int.tryParse(textController.text.trim());
               if (val != null && val > 0) {
-                setState(() => item.quantity = val);
+                Navigator.pop(ctx, val);
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('1 이상의 올바른 숫자를 입력하세요.')),
+                );
               }
-              Navigator.pop(ctx);
             },
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFF39800),
+              backgroundColor:
+                  _mode == 'OUT' ? const Color(0xFFA61C24) : Colors.blue[800],
+              foregroundColor: Colors.white,
             ),
-            child: const Text('적용', style: TextStyle(color: Colors.white)),
+            child: const Text('변경'),
           ),
         ],
       ),
     );
+
+    if (newQty != null) {
+      setState(() {
+        item.quantity = newQty;
+      });
+    }
   }
 
-  void _submit() async {
-    if (_cart.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('등록된 입·출고 항목이 없습니다.')));
+  // 1. 목록 선택 모달 열기
+  void _openItemListModal() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => _AdminCategorySelectModal(
+        selectedWarehouse: _selectedWarehouse,
+        mode: _mode,
+        materialsStream: _materialsStream,
+        onItemsAdded: (newItems) {
+          for (var newItem in newItems) {
+            _addOrUpdateItem(
+                newItem.materialCode, newItem.materialName, newItem.quantity);
+          }
+        },
+      ),
+    );
+  }
+
+  // 2. QR 바코드 스캐너 모달 열기 (스캔 시 메인 _itemList로 즉시 통합)
+  void _openScannerModal() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => _AdminScannerModal(
+        selectedWarehouse: _selectedWarehouse,
+        mode: _mode,
+        onItemScanned: (code, name, qty) {
+          _addOrUpdateItem(code, name, qty);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('$name ($qty개) 선택 자재에 추가됨'),
+              duration: const Duration(milliseconds: 1500),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  // 3. 최종 처리 전송 (출고: 차감 / 입고: 가산 + 메모 선택 허용)
+  Future<void> _submitInventory() async {
+    if (_itemList.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('처리할 자재를 추가해 주세요.')),
+      );
       return;
     }
 
-    final unconfirmedCount = _cart
-        .where((item) => !item.isConfirmed && !item.requiresSerial)
-        .length;
-    if (unconfirmedCount > 0) {
-      final proceed = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text(
-            '수량 미확정 알림',
-            style: TextStyle(fontWeight: FontWeight.bold),
-          ),
-          content: Text(
-            '수량 확정을 누르지 않은 일반자재가 $unconfirmedCount건 있습니다.\n현재 수량 그대로 전송하시겠습니까?',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('취소'),
-            ),
-            ElevatedButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFF39800),
-              ),
-              child: const Text(
-                '그대로 전송',
-                style: TextStyle(color: Colors.white),
-              ),
-            ),
-          ],
-        ),
-      );
-      if (proceed != true) return;
-    }
+    final memo = _memoController.text.trim();
+    final isOut = _mode == 'OUT';
+    final actionName = isOut ? '관리자 출고(차감)' : '관리자 입고(증가)';
+    final logType = isOut ? '출고' : '입고';
 
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text(
-          '입·출고 전송 확인',
-          style: TextStyle(fontWeight: FontWeight.bold),
+        title: Text('$actionName 확인',
+            style: const TextStyle(fontWeight: FontWeight.bold)),
+        content: Text(
+          '거점: [$_selectedWarehouse 창고]\n'
+          '유형: [$logType]\n'
+          '총 ${_itemList.length}종 (${_totalQuantity}개)\n'
+          '비고: ${memo.isEmpty ? '(없음)' : memo}\n\n'
+          '$actionName 처리를 확정하시겠습니까?',
         ),
-        content: Text('총 ${_cart.length}건의 데이터를 전송하시겠습니까?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -227,9 +205,11 @@ class _AdvancedInventoryScreenState extends State<AdvancedInventoryScreen> {
           ElevatedButton(
             onPressed: () => Navigator.pop(ctx, true),
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFF39800),
+              backgroundColor:
+                  isOut ? const Color(0xFFA61C24) : Colors.blue[800],
+              foregroundColor: Colors.white,
             ),
-            child: const Text('전송', style: TextStyle(color: Colors.white)),
+            child: const Text('확정 실행'),
           ),
         ],
       ),
@@ -240,573 +220,420 @@ class _AdvancedInventoryScreenState extends State<AdvancedInventoryScreen> {
     setState(() => _isSubmitting = true);
 
     try {
-      final batch = FirebaseFirestore.instance.batch();
-      final collection = FirebaseFirestore.instance.collection(
-        'advanced_inventory_logs',
-      );
       final now = DateTime.now();
+      final dateStr =
+          '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+      final timeStr =
+          '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
 
-      for (var item in _cart) {
-        final docRef = collection.doc();
+      final firestore = FirebaseFirestore.instance;
+      final batch = firestore.batch();
+      final matCollection = firestore.collection('materials');
+      final logCollection = firestore.collection('normal_out_logs');
+
+      for (var item in _itemList) {
+        // 1. 통합 입출고 로그 등록 (type: '입고' 또는 '출고')
+        final docRef = logCollection.doc();
         batch.set(docRef, {
           'timestamp': FieldValue.serverTimestamp(),
-          'displayTime': now.toIso8601String(),
-          'actionType': item.actionType,
-          'condition': item.condition,
-          'itemType': item.itemType, // '사급' or '지입'
+          'type': logType,
+          'outDate': dateStr,
+          'outTime': timeStr,
+          'warehouse': _selectedWarehouse,
+          'team': '관리자',
+          'userName': widget.currentUser.name,
+          'userPhone': widget.currentUser.phone,
           'materialCode': item.materialCode,
           'materialName': item.materialName,
           'quantity': item.quantity,
-          'sktSerial': item.sktSerial ?? '',
-          'team': widget.currentUser.team,
-          'userName': widget.currentUser.name,
-          'userPhone': widget.currentUser.phone,
+          'memo': memo, // 엑셀 J열 비고 매핑
           'syncedToExcel': false,
+        });
+
+        // 2. 실시간 재고 가감 처리 ('거점_자재코드')
+        final deltaStock = isOut ? -item.quantity : item.quantity;
+        final matDocRef =
+            matCollection.doc('${_selectedWarehouse}_${item.materialCode}');
+        batch.update(matDocRef, {
+          'currentStock': FieldValue.increment(deltaStock),
         });
       }
 
       await batch.commit();
 
       if (!mounted) return;
+      setState(() {
+        _itemList.clear();
+        _memoController.clear();
+        _isSubmitting = false;
+      });
 
       showDialog(
         context: context,
-        barrierDismissible: false,
         builder: (ctx) => AlertDialog(
-          title: const Text('전송 완료'),
-          content: const Text('입·출고 내역이 성공적으로 저장되었습니다.\n엑셀에서 동기화하세요.'),
+          title: const Text('처리 완료',
+              style: TextStyle(fontWeight: FontWeight.bold)),
+          content: Text('[$_selectedWarehouse 창고] $actionName 처리가 완료되었습니다.'),
           actions: [
             ElevatedButton(
-              onPressed: () {
-                Navigator.pop(ctx);
-                Navigator.pop(context);
-              },
+              onPressed: () => Navigator.pop(ctx),
               style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFF39800),
+                backgroundColor:
+                    isOut ? const Color(0xFFA61C24) : Colors.blue[800],
+                foregroundColor: Colors.white,
               ),
-              child: const Text('확인', style: TextStyle(color: Colors.white)),
+              child: const Text('확인'),
             ),
           ],
         ),
       );
     } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('전송 실패: $e')));
-    } finally {
-      if (mounted) setState(() => _isSubmitting = false);
+      if (!mounted) return;
+      setState(() => _isSubmitting = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('처리 중 오류가 발생했습니다: $e')),
+      );
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final isOut = _mode == 'OUT';
+
     return Scaffold(
+      backgroundColor: const Color(0xFFF8F9FA),
       appBar: AppBar(
-        title: const Text(
-          '입고 관리 / 출고 관리',
-          style: TextStyle(fontWeight: FontWeight.bold),
-        ),
-        backgroundColor: const Color(0xFFF39800),
+        title: const Text('관리자 입·출고 종합관리',
+            style: TextStyle(fontWeight: FontWeight.bold)),
+        backgroundColor: const Color(0xFF1E293B),
         foregroundColor: Colors.white,
       ),
       body: Column(
         children: [
-          Container(
-            color: Colors.white,
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Row(
-              children: [
-                Expanded(
-                  child: ElevatedButton.icon(
-                    icon: const Icon(Icons.arrow_upward_rounded, size: 18),
-                    label: const Text(
-                      '출고 모드',
-                      style: TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    onPressed: () => setState(() {
-                      _currentAction = 'OUT';
-                      _currentCondition = '신품';
-                    }),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: _currentAction == 'OUT'
-                          ? const Color(0xFFA61C24)
-                          : Colors.grey[200],
-                      foregroundColor: _currentAction == 'OUT'
-                          ? Colors.white
-                          : Colors.black87,
-                      elevation: 0,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: ElevatedButton.icon(
-                    icon: const Icon(Icons.arrow_downward_rounded, size: 18),
-                    label: const Text(
-                      '입고 모드',
-                      style: TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    onPressed: () => setState(() {
-                      _currentAction = 'IN';
-                      _currentCondition = '신품';
-                    }),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: _currentAction == 'IN'
-                          ? const Color(0xFF2E7D32)
-                          : Colors.grey[200],
-                      foregroundColor: _currentAction == 'IN'
-                          ? Colors.white
-                          : Colors.black87,
-                      elevation: 0,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Container(
-            color: Colors.white,
-            padding: const EdgeInsets.only(left: 16, right: 16, bottom: 8),
-            child: Row(
-              children: [
-                const Text(
-                  '상태 구분: ',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-                ),
-                const SizedBox(width: 8),
-                ChoiceChip(
-                  label: const Text('신품'),
-                  selected: _currentCondition == '신품',
-                  selectedColor: const Color(0xFFE8F5E9),
-                  labelStyle: TextStyle(
-                    color: _currentCondition == '신품'
-                        ? const Color(0xFF2E7D32)
-                        : Colors.black87,
-                    fontWeight: FontWeight.bold,
-                  ),
-                  onSelected: (val) {
-                    if (val) setState(() => _currentCondition = '신품');
-                  },
-                ),
-                const SizedBox(width: 8),
-                ChoiceChip(
-                  label: const Text('구품'),
-                  selected: _currentCondition == '구품',
-                  selectedColor: const Color(0xFFFFF3E0),
-                  labelStyle: TextStyle(
-                    color: _currentCondition == '구품'
-                        ? const Color(0xFFEF6C00)
-                        : Colors.black87,
-                    fontWeight: FontWeight.bold,
-                  ),
-                  onSelected: (val) {
-                    if (val) setState(() => _currentCondition = '구품');
-                  },
-                ),
-                if (_currentAction == 'OUT') ...[
-                  const SizedBox(width: 8),
-                  ChoiceChip(
-                    label: const Text('불량'),
-                    selected: _currentCondition == '불량',
-                    selectedColor: const Color(0xFFFFEBEE),
-                    labelStyle: TextStyle(
-                      color: _currentCondition == '불량'
-                          ? Colors.red
-                          : Colors.black87,
-                      fontWeight: FontWeight.bold,
-                    ),
-                    onSelected: (val) {
-                      if (val) setState(() => _currentCondition = '불량');
-                    },
-                  ),
-                ],
-              ],
-            ),
-          ),
+          // 작업 모드 선택 (출고 vs 입고)
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-            color: const Color(0xFFFAFAFA),
+            color: Colors.white,
             child: Row(
               children: [
+                Expanded(
+                  child: ChoiceChip(
+                    label: const Center(
+                      child: Text('출고 모드 (재고 차감)',
+                          style: TextStyle(fontWeight: FontWeight.bold)),
+                    ),
+                    selected: isOut,
+                    selectedColor: const Color(0xFFA61C24),
+                    labelStyle: TextStyle(
+                      color: isOut ? Colors.white : Colors.black87,
+                    ),
+                    onSelected: (val) {
+                      if (val && _mode != 'OUT') {
+                        setState(() {
+                          _mode = 'OUT';
+                          _itemList.clear();
+                        });
+                      }
+                    },
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: ChoiceChip(
+                    label: const Center(
+                      child: Text('입고 모드 (재고 증가)',
+                          style: TextStyle(fontWeight: FontWeight.bold)),
+                    ),
+                    selected: !isOut,
+                    selectedColor: Colors.blue[800],
+                    labelStyle: TextStyle(
+                      color: !isOut ? Colors.white : Colors.black87,
+                    ),
+                    onSelected: (val) {
+                      if (val && _mode != 'IN') {
+                        setState(() {
+                          _mode = 'IN';
+                          _itemList.clear();
+                        });
+                      }
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+
+          // 거점 선택 (광주 vs 본사)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            color: Colors.white,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text('관리 거점 선택',
+                    style:
+                        TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                Row(
+                  children: ['광주', '본사'].map((wh) {
+                    final isSel = _selectedWarehouse == wh;
+                    return Padding(
+                      padding: const EdgeInsets.only(left: 8),
+                      child: ChoiceChip(
+                        label: Text(wh),
+                        selected: isSel,
+                        selectedColor:
+                            isOut ? const Color(0xFFA61C24) : Colors.blue[800],
+                        labelStyle: TextStyle(
+                          color: isSel ? Colors.white : Colors.black87,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        onSelected: (val) {
+                          if (val && _selectedWarehouse != wh) {
+                            setState(() {
+                              _selectedWarehouse = wh;
+                              _itemList.clear();
+                            });
+                          }
+                        },
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+
+          // 진입 버튼 영역 (목록 선택 / QR 스캔)
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: _openItemListModal,
+                    icon: const Icon(Icons.list_alt, size: 20),
+                    label: Text('목록 선택 ($_selectedWarehouse)',
+                        style: const TextStyle(fontWeight: FontWeight.bold)),
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      backgroundColor: const Color(0xFF2C3E50),
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
                 Expanded(
                   child: ElevatedButton.icon(
                     onPressed: _openScannerModal,
                     icon: const Icon(Icons.qr_code_scanner, size: 20),
-                    label: Text(
-                      '[$_currentCondition ${_currentAction == 'IN' ? '입고' : '출고'}] QR 스캔',
-                      style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
+                    label: const Text('QR 스캔',
+                        style: TextStyle(fontWeight: FontWeight.bold)),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFFF39800),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      backgroundColor:
+                          isOut ? const Color(0xFFA61C24) : Colors.blue[800],
                       foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 11),
                       shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: _openManualListModal,
-                    icon: const Icon(Icons.list_alt, size: 20),
-                    label: const Text(
-                      '목록 선택',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: const Color(0xFF2C3E50),
-                      side: const BorderSide(
-                        color: Color(0xFF2C3E50),
-                        width: 1.5,
-                      ),
-                      padding: const EdgeInsets.symmetric(vertical: 11),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
-                      ),
+                          borderRadius: BorderRadius.circular(10)),
                     ),
                   ),
                 ),
               ],
             ),
           ),
+
+          // 리스트 헤더
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
+            padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
-                  '입·출고 대기 목록 (${_cart.length}건)',
+                  '선택된 자재 (${_itemList.length}종 / 총 $_totalQuantity개)',
                   style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 14,
-                  ),
+                      fontWeight: FontWeight.bold, fontSize: 14),
                 ),
-                if (_cart.isNotEmpty)
+                if (_itemList.isNotEmpty)
                   TextButton(
-                    onPressed: () => setState(() => _cart.clear()),
-                    child: const Text(
-                      '전체 비우기',
-                      style: TextStyle(color: Colors.red, fontSize: 12),
-                    ),
+                    onPressed: () => setState(() => _itemList.clear()),
+                    child: const Text('전체 비우기',
+                        style: TextStyle(color: Colors.red, fontSize: 12)),
                   ),
               ],
             ),
           ),
+
+          // 선택된 품목 리스트 (목록 선택 + QR 스캔 자재 모두 통합 표시)
           Expanded(
-            child: Container(
-              color: const Color(0xFFF5F6F8),
-              child: _cart.isEmpty
-                  ? const Center(
-                      child: Text(
-                        '등록된 항목이 없습니다.\n상단의 [QR 스캔] 또는 [목록 선택]을 누르세요.',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.grey),
-                      ),
-                    )
-                  : ListView.separated(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 4,
-                      ),
-                      itemCount: _cart.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 8),
-                      itemBuilder: (ctx, index) {
-                        final item = _cart[index];
-                        final isOut = item.actionType == 'OUT';
-                        return Card(
-                          elevation: 1.5,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8),
-                            side: BorderSide(
-                              color: item.isConfirmed
-                                  ? const Color(0xFF2E7D32)
-                                  : Colors.transparent,
-                              width: 1.2,
-                            ),
-                          ),
-                          child: Padding(
-                            padding: const EdgeInsets.all(12),
-                            child: Column(
-                              children: [
-                                Row(
+            child: _itemList.isEmpty
+                ? Center(
+                    child: Text(
+                      '[$_selectedWarehouse 창고] 처리할 자재를 담아주세요.',
+                      style: TextStyle(color: Colors.grey[500]),
+                    ),
+                  )
+                : ListView.separated(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: _itemList.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 8),
+                    itemBuilder: (ctx, idx) {
+                      final item = _itemList[idx];
+                      return Card(
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10)),
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Container(
+                                    Text(item.materialName,
+                                        style: const TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 14)),
+                                    const SizedBox(height: 3),
+                                    Text('코드: ${item.materialCode}',
+                                        style: TextStyle(
+                                            fontSize: 11,
+                                            color: Colors.grey[600])),
+                                  ],
+                                ),
+                              ),
+                              Row(
+                                children: [
+                                  // [-] 버튼
+                                  IconButton(
+                                    icon: const Icon(
+                                        Icons.remove_circle_outline,
+                                        size: 22),
+                                    onPressed: () {
+                                      if (item.quantity > 1) {
+                                        setState(() => item.quantity--);
+                                      } else {
+                                        setState(() =>
+                                            _itemList.removeAt(idx));
+                                      }
+                                    },
+                                  ),
+
+                                  // ★ [숫자 터치 시 직접 수량 입력 팝업 띄우기]
+                                  InkWell(
+                                    onTap: () => _editQuantityDirectly(item),
+                                    borderRadius: BorderRadius.circular(6),
+                                    child: Container(
                                       padding: const EdgeInsets.symmetric(
-                                        horizontal: 8,
-                                        vertical: 4,
-                                      ),
+                                          horizontal: 10, vertical: 6),
                                       decoration: BoxDecoration(
-                                        color: isOut
-                                            ? const Color(0xFFFFEBEE)
-                                            : const Color(0xFFE8F5E9),
+                                        color: const Color(0xFFF1F5F9),
                                         borderRadius: BorderRadius.circular(6),
+                                        border: Border.all(
+                                            color: const Color(0xFFCBD5E1)),
                                       ),
                                       child: Text(
-                                        '${item.condition} ${isOut ? '출고' : '입고'} [${item.itemType}]',
+                                        '${item.quantity}',
                                         style: TextStyle(
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.bold,
                                           color: isOut
-                                              ? Colors.red[800]
-                                              : Colors.green[800],
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 11,
+                                              ? const Color(0xFFA61C24)
+                                              : Colors.blue[800],
                                         ),
                                       ),
                                     ),
-                                    const SizedBox(width: 8),
-                                    if (item.requiresSerial)
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 6,
-                                          vertical: 2,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: const Color(0xFFFFF3E0),
-                                          borderRadius: BorderRadius.circular(
-                                            4,
-                                          ),
-                                        ),
-                                        child: const Text(
-                                          'SKT시리얼',
-                                          style: TextStyle(
-                                            color: Color(0xFFEF6C00),
-                                            fontSize: 10,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                      ),
-                                    const Spacer(),
-                                    IconButton(
-                                      icon: const Icon(
-                                        Icons.close,
-                                        size: 18,
-                                        color: Colors.grey,
-                                      ),
-                                      onPressed: () =>
-                                          setState(() => _cart.removeAt(index)),
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 4),
-                                Row(
-                                  children: [
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            item.materialName,
-                                            style: const TextStyle(
-                                              fontWeight: FontWeight.bold,
-                                              fontSize: 13,
-                                            ),
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                          Text(
-                                            '코드: ${item.materialCode}',
-                                            style: const TextStyle(
-                                              color: Colors.grey,
-                                              fontSize: 11,
-                                            ),
-                                          ),
-                                          if (item.sktSerial != null &&
-                                              item.sktSerial!.isNotEmpty)
-                                            Text(
-                                              'SKT S/N: ${item.sktSerial}',
-                                              style: const TextStyle(
-                                                fontSize: 12,
-                                                color: Color(0xFFEF6C00),
-                                                fontWeight: FontWeight.bold,
-                                              ),
-                                            ),
-                                        ],
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                const Divider(height: 16),
-                                Row(
-                                  mainAxisAlignment:
-                                      MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    if (!item.requiresSerial)
-                                      item.isConfirmed
-                                          ? OutlinedButton.icon(
-                                              onPressed: () => setState(
-                                                () => item.isConfirmed = false,
-                                              ),
-                                              icon: const Icon(
-                                                Icons.edit,
-                                                size: 14,
-                                              ),
-                                              label: const Text(
-                                                '수량 수정',
-                                                style: TextStyle(fontSize: 12),
-                                              ),
-                                            )
-                                          : ElevatedButton.icon(
-                                              onPressed: () => setState(
-                                                () => item.isConfirmed = true,
-                                              ),
-                                              icon: const Icon(
-                                                Icons.check,
-                                                size: 14,
-                                              ),
-                                              label: const Text(
-                                                '수량 확정',
-                                                style: TextStyle(
-                                                  fontSize: 12,
-                                                  fontWeight: FontWeight.bold,
-                                                ),
-                                              ),
-                                              style: ElevatedButton.styleFrom(
-                                                backgroundColor: const Color(
-                                                  0xFF2E7D32,
-                                                ),
-                                                foregroundColor: Colors.white,
-                                              ),
-                                            )
-                                    else
-                                      const Text(
-                                        '1 EA (단일 시리얼)',
-                                        style: TextStyle(
-                                          fontSize: 12,
-                                          color: Colors.grey,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                    Row(
-                                      children: [
-                                        const Text(
-                                          '수량: ',
-                                          style: TextStyle(
-                                            fontSize: 13,
-                                            fontWeight: FontWeight.w500,
-                                          ),
-                                        ),
-                                        if (!item.requiresSerial) ...[
-                                          IconButton(
-                                            icon: Icon(
-                                              Icons.remove_circle_outline,
-                                              size: 20,
-                                              color: item.isConfirmed
-                                                  ? Colors.grey[300]
-                                                  : Colors.black87,
-                                            ),
-                                            onPressed: item.isConfirmed
-                                                ? null
-                                                : () => setState(() {
-                                                    if (item.quantity > 1)
-                                                      item.quantity -= 1;
-                                                  }),
-                                          ),
-                                          InkWell(
-                                            onTap: () =>
-                                                _showQuantityInputDialog(item),
-                                            child: Container(
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                    horizontal: 10,
-                                                    vertical: 4,
-                                                  ),
-                                              decoration: BoxDecoration(
-                                                color: Colors.grey[100],
-                                                borderRadius:
-                                                    BorderRadius.circular(6),
-                                                border: Border.all(
-                                                  color: Colors.grey[300]!,
-                                                ),
-                                              ),
-                                              child: Text(
-                                                '${item.quantity}',
-                                                style: TextStyle(
-                                                  fontSize: 16,
-                                                  fontWeight: FontWeight.bold,
-                                                  color: item.isConfirmed
-                                                      ? const Color(0xFF2E7D32)
-                                                      : const Color(0xFFF39800),
-                                                ),
-                                              ),
-                                            ),
-                                          ),
-                                          IconButton(
-                                            icon: Icon(
-                                              Icons.add_circle_outline,
-                                              size: 20,
-                                              color: item.isConfirmed
-                                                  ? Colors.grey[300]
-                                                  : Colors.black87,
-                                            ),
-                                            onPressed: item.isConfirmed
-                                                ? null
-                                                : () => setState(
-                                                    () => item.quantity += 1,
-                                                  ),
-                                          ),
-                                        ] else ...[
-                                          const Text(
-                                            '1 EA',
-                                            style: TextStyle(
-                                              fontSize: 14,
-                                              fontWeight: FontWeight.bold,
-                                              color: Color(0xFFF39800),
-                                            ),
-                                          ),
-                                        ],
-                                      ],
-                                    ),
-                                  ],
-                                ),
-                              ],
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-            ),
-          ),
-          SafeArea(
-            top: false,
-            // bottom: true 로 내비게이션 바 영역 자동 보호
-            bottom: true,
-            child: Container(
-              // 하단 여백을 16pt 주어 내비게이션 바 위로 올림
-              padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
-              decoration: const BoxDecoration(
-                color: Colors.white,
-                border: Border(top: BorderSide(color: Color(0xFFEEEEEE))),
-              ),
-              child: SizedBox(
-                width: double.infinity,
-                height: 50,
-                child: ElevatedButton(
-                  onPressed: _isSubmitting || _cart.isEmpty ? null : _submit,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFFF39800),
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                  ),
-                  child: _isSubmitting
-                      ? const CircularProgressIndicator(color: Colors.white)
-                      : Text(
-                          '전송 완료 (총 ${_cart.length}건)',
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
+                                  ),
+
+                                  // [+] 버튼
+                                  IconButton(
+                                    icon: const Icon(
+                                        Icons.add_circle_outline,
+                                        size: 22),
+                                    onPressed: () {
+                                      setState(() => item.quantity++);
+                                    },
+                                  ),
+
+                                  // 삭제 아이콘
+                                  IconButton(
+                                    icon: const Icon(Icons.delete_outline,
+                                        color: Colors.grey, size: 20),
+                                    onPressed: () =>
+                                        setState(() => _itemList.removeAt(idx)),
+                                  ),
+                                ],
+                              ),
+                            ],
                           ),
                         ),
-                ),
+                      );
+                    },
+                  ),
+          ),
+
+          // 관리자 메모 입력란 & 하단 확정 버튼
+          Container(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 4)],
+            ),
+            child: SafeArea(
+              child: Column(
+                children: [
+                  TextField(
+                    controller: _memoController,
+                    decoration: InputDecoration(
+                      hintText: isOut
+                          ? '출고 비고 입력 (선택사항, 예: OOO팀 현장수령 등)'
+                          : '입고 비고 입력 (선택사항, 예: 신규 구매 입고 등)',
+                      hintStyle:
+                          TextStyle(fontSize: 13, color: Colors.grey[400]),
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 10),
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8)),
+                      prefixIcon:
+                          const Icon(Icons.edit_note, color: Colors.grey),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 48,
+                    child: ElevatedButton(
+                      onPressed: (_itemList.isEmpty || _isSubmitting)
+                          ? null
+                          : _submitInventory,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: isOut
+                            ? const Color(0xFFA61C24)
+                            : Colors.blue[800],
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10)),
+                      ),
+                      child: _isSubmitting
+                          ? const SizedBox(
+                              width: 24,
+                              height: 24,
+                              child: CircularProgressIndicator(
+                                  color: Colors.white, strokeWidth: 2),
+                            )
+                          : Text(
+                              isOut
+                                  ? '관리자 출고 확정 ($_totalQuantity개 차감)'
+                                  : '관리자 입고 확정 ($_totalQuantity개 가산)',
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.bold, fontSize: 16),
+                            ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -816,269 +643,739 @@ class _AdvancedInventoryScreenState extends State<AdvancedInventoryScreen> {
   }
 }
 
-// 상단 모달 스캐너 위젯 (시각적 번쩍임 피드백 + SKT 시리얼 연속 스캔 내장)
-class _AdvancedScannerView extends StatefulWidget {
-  final String currentAction;
-  final String currentCondition;
-  final List<String> existingSerials;
-  final Function(List<AdvancedItem>) onItemsScanned;
+// ------------------------------------------------------------
+// 관리자 규격 목록 선택 바텀시트
+// ------------------------------------------------------------
+class _AdminCategorySelectModal extends StatefulWidget {
+  final String selectedWarehouse;
+  final String mode;
+  final Stream<QuerySnapshot> materialsStream;
+  final Function(List<AdminInventoryItem>) onItemsAdded;
 
-  const _AdvancedScannerView({
-    required this.currentAction,
-    required this.currentCondition,
-    required this.existingSerials,
-    required this.onItemsScanned,
+  const _AdminCategorySelectModal({
+    required this.selectedWarehouse,
+    required this.mode,
+    required this.materialsStream,
+    required this.onItemsAdded,
   });
 
   @override
-  State<_AdvancedScannerView> createState() => _AdvancedScannerViewState();
+  State<_AdminCategorySelectModal> createState() =>
+      _AdminCategorySelectModalState();
 }
 
-class _AdvancedScannerViewState extends State<_AdvancedScannerView> {
-  final MobileScannerController _controller = MobileScannerController();
-  final List<AdvancedItem> _sessionItems = [];
+class _AdminCategorySelectModalState extends State<_AdminCategorySelectModal> {
+  String? _selectedCat1;
+  String? _selectedCat2;
+  final Map<String, int> _quantities = {};
 
-  bool _isProcessing = false;
-  bool _showFlashEffect = false; // 플래시 애니메이션 플래그
-
-  bool _isWaitingSktSerial = false;
-  String? _activeMatCode;
-  String? _activeMatName;
-  String _activeItemType = '사급';
-  int _activeSerialCount = 0;
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  void _triggerFlash() {
-    setState(() => _showFlashEffect = true);
-    Future.delayed(const Duration(milliseconds: 150), () {
-      if (mounted) setState(() => _showFlashEffect = false);
-    });
-  }
-
-  void _onDetect(BarcodeCapture capture) async {
-    if (_isProcessing) return;
-    final barcode = capture.barcodes.firstOrNull;
-    if (barcode == null || barcode.rawValue == null) return;
-
-    final rawValue = barcode.rawValue!.trim();
-    if (rawValue.isEmpty) return;
-
-    // SKT 시리얼 스캔 대기 모드
-    if (_isWaitingSktSerial) {
-      if (rawValue.contains('#SN')) {
-        _isProcessing = true;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('⚠️ SKT 시리얼을 스캔하세요. 종료는 [스캔 완료]를 누르세요.'),
-            backgroundColor: Colors.red,
+  // 목록 선택 화면 내에서도 숫자 터치 시 직접 수량 입력 지원
+  Future<void> _editQuantityInList(String code, String name) async {
+    final currentVal = _quantities[code] ?? 0;
+    final textController = TextEditingController(
+        text: currentVal > 0 ? currentVal.toString() : '');
+    final newQty = await showDialog<int>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('$name\n수량 직접 입력',
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+        content: TextField(
+          controller: textController,
+          keyboardType: TextInputType.number,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: '담을 수량',
+            suffixText: '개',
+            border: OutlineInputBorder(),
           ),
-        );
-        await Future.delayed(const Duration(milliseconds: 1200));
-        _isProcessing = false;
-        return;
-      }
-
-      if (widget.existingSerials.contains(rawValue) ||
-          _sessionItems.any((i) => i.sktSerial == rawValue)) {
-        _isProcessing = true;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('⚠️ 이미 등록된 SKT 시리얼입니다: $rawValue'),
-            backgroundColor: Colors.red,
-          ),
-        );
-        await Future.delayed(const Duration(milliseconds: 1000));
-        _isProcessing = false;
-        return;
-      }
-
-      _isProcessing = true;
-      _triggerFlash(); // 인식 번쩍임 피드백
-
-      setState(() {
-        _activeSerialCount += 1;
-        _sessionItems.add(
-          AdvancedItem(
-            materialCode: _activeMatCode!,
-            materialName: _activeMatName!,
-            quantity: 1,
-            actionType: widget.currentAction,
-            condition: widget.currentCondition,
-            itemType: _activeItemType,
-            sktSerial: rawValue,
-            requiresSerial: true,
-            isConfirmed: true,
-          ),
-        );
-      });
-
-      await Future.delayed(const Duration(milliseconds: 1000));
-      _isProcessing = false;
-      return;
-    }
-
-    // F2 자재 QR 인식 모드
-    _isProcessing = true;
-    bool isSerial = false;
-    String cleanCode = rawValue;
-    if (rawValue.contains('#SN')) {
-      isSerial = true;
-      cleanCode = rawValue.replaceAll('#SN', '').trim();
-    }
-
-    String? fetchedName;
-    String fetchedItemType = '사급';
-
-    try {
-      final doc = await FirebaseFirestore.instance
-          .collection('materials')
-          .doc(cleanCode)
-          .get();
-      if (doc.exists && doc.data() != null) {
-        fetchedName = doc.data()!['materialName'] ?? '품명 없음';
-        fetchedItemType = doc.data()!['itemType'] ?? '사급';
-        if (doc.data()!['requiresSerial'] == true) isSerial = true;
-      }
-    } catch (_) {}
-
-    if (fetchedName == null && !rawValue.contains('#SN')) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('⚠️ 미등록 코드: $rawValue\n반드시 F2 자재 QR을 먼저 스캔하세요.'),
-          backgroundColor: Colors.red,
         ),
-      );
-      await Future.delayed(const Duration(milliseconds: 1500));
-      _isProcessing = false;
-      return;
-    }
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, null),
+            child: const Text('취소'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final val = int.tryParse(textController.text.trim());
+              if (val != null && val >= 0) {
+                Navigator.pop(ctx, val);
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('0 이상의 숫자를 입력하세요.')),
+                );
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: widget.mode == 'OUT'
+                  ? const Color(0xFFA61C24)
+                  : Colors.blue[800],
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('확인'),
+          ),
+        ],
+      ),
+    );
 
-    _triggerFlash(); // 인식 성공 시 번쩍임
-    final finalName = fetchedName ?? cleanCode;
-
-    if (isSerial) {
+    if (newQty != null) {
       setState(() {
-        _activeMatCode = cleanCode;
-        _activeMatName = finalName;
-        _activeItemType = fetchedItemType;
-        _activeSerialCount = 0;
-        _isWaitingSktSerial = true;
+        _quantities[code] = newQty;
       });
-      await Future.delayed(const Duration(milliseconds: 1000));
-      _isProcessing = false;
-    } else {
-      widget.onItemsScanned([
-        AdvancedItem(
-          materialCode: cleanCode,
-          materialName: finalName,
-          quantity: 1,
-          actionType: widget.currentAction,
-          condition: widget.currentCondition,
-          itemType: fetchedItemType,
-          requiresSerial: false,
-          isConfirmed: false,
-        ),
-      ]);
-      Navigator.pop(context); // 일반자재는 즉시 닫고 리스트로 복귀
     }
-  }
-
-  void _finishSerial() {
-    widget.onItemsScanned(_sessionItems);
-    Navigator.pop(context);
   }
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      color: Colors.black,
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          MobileScanner(controller: _controller, onDetect: _onDetect),
-          Container(
-            width: 250,
-            height: 160,
-            decoration: BoxDecoration(
-              border: Border.all(
-                color: _isWaitingSktSerial
-                    ? const Color(0xFFF39800)
-                    : Colors.white,
-                width: 2.5,
-              ),
-              borderRadius: BorderRadius.circular(12),
+      height: MediaQuery.of(context).size.height * 0.85,
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      child: StreamBuilder<QuerySnapshot>(
+        stream: widget.materialsStream,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting &&
+              !snapshot.hasData) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+            return const Center(child: Text('등록된 자재 목록이 없습니다.'));
+          }
+
+          final materials = snapshot.data!.docs.map((doc) {
+            final data = doc.data() as Map<String, dynamic>;
+            data['docId'] = doc.id;
+            return data;
+          }).where((m) {
+            final wh = (m['warehouse'] ?? '').toString().trim();
+            final itemType = (m['itemType'] ?? '').toString().trim();
+
+            if (widget.selectedWarehouse == '광주') {
+              return wh == '광주';
+            } else {
+              return wh == '본사' && itemType != '사급';
+            }
+          }).toList();
+
+          final cat1Set = <String>{};
+          for (var m in materials) {
+            final c1 = (m['category1'] ?? m['분류1'] ?? '').toString().trim();
+            if (c1.isNotEmpty) cat1Set.add(c1);
+          }
+          final cat1List = cat1Set.toList()..sort();
+
+          if ((_selectedCat1 == null || !cat1List.contains(_selectedCat1)) &&
+              cat1List.isNotEmpty) {
+            _selectedCat1 = cat1List.first;
+          }
+
+          final cat2Set = <String>{};
+          for (var m in materials) {
+            final c1 = (m['category1'] ?? m['분류1'] ?? '').toString().trim();
+            final c2 = (m['category2'] ?? m['분류2'] ?? '').toString().trim();
+            if (c1 == _selectedCat1 && c2.isNotEmpty) {
+              cat2Set.add(c2);
+            }
+          }
+          final cat2List = cat2Set.toList()..sort();
+
+          if ((_selectedCat2 == null || !cat2List.contains(_selectedCat2)) &&
+              cat2List.isNotEmpty) {
+            _selectedCat2 = cat2List.first;
+          }
+
+          final filteredMaterials = materials.where((m) {
+            final c1 = (m['category1'] ?? m['분류1'] ?? '').toString().trim();
+            final c2 = (m['category2'] ?? m['분류2'] ?? '').toString().trim();
+            if (cat2List.isNotEmpty) {
+              return c1 == _selectedCat1 && c2 == _selectedCat2;
+            }
+            return c1 == _selectedCat1;
+          }).toList();
+
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      '관리자 품목 선택 [${widget.selectedWarehouse} 창고]',
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 16),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: () => Navigator.pop(context),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        value: _selectedCat1,
+                        isExpanded: true,
+                        menuMaxHeight: 450,
+                        itemHeight: kMinInteractiveDimension,
+                        decoration: const InputDecoration(
+                          labelText: '대분류',
+                          contentPadding:
+                              EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                          border: OutlineInputBorder(),
+                        ),
+                        items: cat1List.map((c) {
+                          return DropdownMenuItem(
+                              value: c,
+                              child: Text(c, overflow: TextOverflow.ellipsis));
+                        }).toList(),
+                        onChanged: (val) {
+                          setState(() {
+                            _selectedCat1 = val;
+                            _selectedCat2 = null;
+                            _quantities.clear();
+                          });
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        value: _selectedCat2,
+                        isExpanded: true,
+                        menuMaxHeight: 450,
+                        itemHeight: kMinInteractiveDimension,
+                        decoration: const InputDecoration(
+                          labelText: '소분류',
+                          contentPadding:
+                              EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                          border: OutlineInputBorder(),
+                        ),
+                        items: cat2List.map((c) {
+                          return DropdownMenuItem(
+                              value: c,
+                              child: Text(c, overflow: TextOverflow.ellipsis));
+                        }).toList(),
+                        onChanged: (val) {
+                          setState(() {
+                            _selectedCat2 = val;
+                            _quantities.clear();
+                          });
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Expanded(
+                  child: filteredMaterials.isEmpty
+                      ? Center(
+                          child: Text(
+                              '[$widget.selectedWarehouse] 자재가 존재하지 않습니다.',
+                              style: TextStyle(color: Colors.grey[600])))
+                      : ListView.separated(
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          itemCount: filteredMaterials.length,
+                          separatorBuilder: (_, __) =>
+                              const Divider(height: 1),
+                          itemBuilder: (context, idx) {
+                            final mat = filteredMaterials[idx];
+                            final code = (mat['materialCode'] ??
+                                    mat['F2자재코드'] ??
+                                    mat['docId'])
+                                .toString();
+                            final name =
+                                (mat['materialName'] ?? mat['품명'] ?? '')
+                                    .toString();
+                            final spec =
+                                (mat['spec'] ?? mat['규격'] ?? '').toString();
+
+                            final rawStock =
+                                mat['currentStock'] ?? mat['현재고'] ?? 0;
+                            final int stock = rawStock is num
+                                ? rawStock.toInt()
+                                : (int.tryParse(rawStock.toString()) ?? 0);
+
+                            return Padding(
+                              padding:
+                                  const EdgeInsets.symmetric(vertical: 6),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            Flexible(
+                                              child: Text(
+                                                name.isNotEmpty ? name : spec,
+                                                style: const TextStyle(
+                                                    fontWeight: FontWeight.bold,
+                                                    fontSize: 14),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Container(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                      horizontal: 6,
+                                                      vertical: 2),
+                                              decoration: BoxDecoration(
+                                                color: stock > 0
+                                                    ? const Color(0xFFE8F5E9)
+                                                    : (stock < 0
+                                                        ? const Color(
+                                                            0xFFFFEBEE)
+                                                        : const Color(
+                                                            0xFFF1F5F9)),
+                                                borderRadius:
+                                                    BorderRadius.circular(4),
+                                              ),
+                                              child: Text('현재고: $stock',
+                                                  style: TextStyle(
+                                                      fontSize: 11,
+                                                      fontWeight:
+                                                          FontWeight.bold,
+                                                      color: stock > 0
+                                                          ? const Color(
+                                                              0xFF2E7D32)
+                                                          : (stock < 0
+                                                              ? const Color(
+                                                                  0xFFD32F2F)
+                                                              : Colors
+                                                                  .grey[600]))),
+                                            ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 3),
+                                        Text(
+                                            spec.isNotEmpty
+                                                ? '$spec  |  코드: $code'
+                                                : '코드: $code',
+                                            style: TextStyle(
+                                                fontSize: 11,
+                                                color: Colors.grey[600])),
+                                      ],
+                                    ),
+                                  ),
+                                  StatefulBuilder(
+                                    builder: (ctx, setLocalQty) {
+                                      final currentQty =
+                                          _quantities[code] ?? 0;
+                                      return Row(
+                                        children: [
+                                          IconButton(
+                                            icon: const Icon(
+                                                Icons.remove_circle_outline,
+                                                size: 22),
+                                            color: currentQty > 0
+                                                ? Colors.red
+                                                : Colors.grey[300],
+                                            onPressed: currentQty > 0
+                                                ? () {
+                                                    setLocalQty(() =>
+                                                        _quantities[code] =
+                                                            currentQty - 1);
+                                                    setState(() {});
+                                                  }
+                                                : null,
+                                          ),
+                                          // 숫자 터치 시 직접 입력 창
+                                          InkWell(
+                                            onTap: () async {
+                                              await _editQuantityInList(
+                                                  code,
+                                                  name.isNotEmpty
+                                                      ? name
+                                                      : spec);
+                                              setLocalQty(() {});
+                                            },
+                                            child: Container(
+                                              alignment: Alignment.center,
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                      horizontal: 6,
+                                                      vertical: 4),
+                                              decoration: BoxDecoration(
+                                                color: currentQty > 0
+                                                    ? const Color(0xFFFFEBEE)
+                                                    : Colors.transparent,
+                                                borderRadius:
+                                                    BorderRadius.circular(4),
+                                              ),
+                                              child: Text(
+                                                '$currentQty',
+                                                style: TextStyle(
+                                                  fontSize: 15,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: currentQty > 0
+                                                      ? const Color(0xFFA61C24)
+                                                      : Colors.black,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          IconButton(
+                                            icon: const Icon(
+                                                Icons.add_circle_outline,
+                                                size: 22),
+                                            color: const Color(0xFF1E293B),
+                                            onPressed: () {
+                                              setLocalQty(() =>
+                                                  _quantities[code] =
+                                                      currentQty + 1);
+                                              setState(() {});
+                                            },
+                                          ),
+                                        ],
+                                      );
+                                    },
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                ),
+                SafeArea(
+                  child: SizedBox(
+                    width: double.infinity,
+                    height: 48,
+                    child: Builder(
+                      builder: (context) {
+                        final totalSelectedCount =
+                            _quantities.values.fold(0, (sum, q) => sum + q);
+                        return ElevatedButton(
+                          onPressed: totalSelectedCount == 0
+                              ? null
+                              : () {
+                                  List<AdminInventoryItem> itemsToAdd = [];
+                                  _quantities.forEach((code, qty) {
+                                    if (qty > 0) {
+                                      final target = materials.firstWhere(
+                                        (m) =>
+                                            (m['materialCode'] ??
+                                                m['F2자재코드'] ??
+                                                m['docId']) ==
+                                            code,
+                                        orElse: () => {},
+                                      );
+
+                                      final matName = (target['materialName'] ??
+                                              target['품명'] ??
+                                              '')
+                                          .toString();
+                                      final spec = (target['spec'] ??
+                                              target['규격'] ??
+                                              '')
+                                          .toString();
+
+                                      String displayName = matName;
+                                      if (spec.isNotEmpty &&
+                                          spec != matName) {
+                                        displayName = matName.isNotEmpty
+                                            ? '$matName ($spec)'
+                                            : spec;
+                                      }
+                                      if (displayName.isEmpty) {
+                                        displayName = code;
+                                      }
+
+                                      itemsToAdd.add(AdminInventoryItem(
+                                        materialCode: code,
+                                        materialName: displayName,
+                                        quantity: qty,
+                                      ));
+                                    }
+                                  });
+
+                                  widget.onItemsAdded(itemsToAdd);
+                                  Navigator.pop(context);
+                                },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF1E293B),
+                            foregroundColor: Colors.white,
+                          ),
+                          child: Text('선택한 자재 담기 ($totalSelectedCount개)'),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+              ],
             ),
-          ),
-          // 촬영 성공 시 녹색/흰색 플래시 효과
-          if (_showFlashEffect) Container(color: Colors.white.withOpacity(0.4)),
-          Positioned(
-            top: 10,
-            left: 10,
-            right: 10,
+          );
+        },
+      ),
+    );
+  }
+}
+
+// ------------------------------------------------------------
+// 관리자 QR 스캐너 바텀시트 (스캔 후 수량 입력 ➡️ 메인 리스트로 즉시 전송)
+// ------------------------------------------------------------
+class _AdminScannerModal extends StatefulWidget {
+  final String selectedWarehouse;
+  final String mode;
+  final Function(String code, String name, int qty) onItemScanned;
+
+  const _AdminScannerModal({
+    required this.selectedWarehouse,
+    required this.mode,
+    required this.onItemScanned,
+  });
+
+  @override
+  State<_AdminScannerModal> createState() => _AdminScannerModalState();
+}
+
+class _AdminScannerModalState extends State<_AdminScannerModal> {
+  final MobileScannerController _scannerController = MobileScannerController();
+  bool _isProcessing = false;
+
+  @override
+  void dispose() {
+    _scannerController.dispose();
+    super.dispose();
+  }
+
+  void _onDetect(BarcodeCapture capture) async {
+    if (_isProcessing) return;
+    final rawVal = capture.barcodes.firstOrNull?.rawValue?.trim();
+    if (rawVal == null || rawVal.isEmpty) return;
+
+    setState(() => _isProcessing = true);
+    _scannerController.stop(); // 팝업 띄우는 동안 스캔 일시 중지
+
+    try {
+      String targetWarehouse = widget.selectedWarehouse;
+      String materialCode = rawVal;
+
+      if (rawVal.contains('|')) {
+        final parts = rawVal.split('|');
+        if (parts.length >= 2) {
+          targetWarehouse = parts[0].trim();
+          materialCode = parts[1].trim();
+        }
+      }
+
+      String matDocId = '${targetWarehouse}_$materialCode';
+      var snap = await FirebaseFirestore.instance
+          .collection('materials')
+          .doc(matDocId)
+          .get();
+
+      if (!snap.exists) {
+        snap = await FirebaseFirestore.instance
+            .collection('materials')
+            .doc('광주_$materialCode')
+            .get();
+      }
+
+      if (!snap.exists) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('등록되지 않은 자재코드입니다: $materialCode')),
+        );
+        await Future.delayed(const Duration(seconds: 1));
+        _scannerController.start();
+        setState(() => _isProcessing = false);
+        return;
+      }
+
+      final data = snap.data()!;
+      final matName = (data['materialName'] ?? data['품명'] ?? '').toString();
+      final spec = (data['spec'] ?? data['규격'] ?? '').toString();
+
+      String displayName = matName;
+      if (spec.isNotEmpty && spec != matName) {
+        displayName = matName.isNotEmpty ? '$matName ($spec)' : spec;
+      }
+      if (displayName.isEmpty) displayName = materialCode;
+
+      // QR 스캔 즉시 수량 조절 다이얼로그 (+ / - 및 직접 입력창 포함)
+      if (!mounted) return;
+      final textController = TextEditingController(text: '1');
+      int tempQty = 1;
+
+      final int? selectedQty = await showDialog<int>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dlgCtx) {
+          return StatefulBuilder(
+            builder: (context, setDlgState) {
+              return AlertDialog(
+                title: const Text('자재 수량 지정',
+                    style:
+                        TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('거점: [$targetWarehouse 창고]',
+                        style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.blueGrey)),
+                    const SizedBox(height: 6),
+                    Text(displayName,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 15)),
+                    const SizedBox(height: 2),
+                    Text('코드: $materialCode',
+                        style: TextStyle(
+                            color: Colors.grey[600], fontSize: 12)),
+                    const SizedBox(height: 16),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.remove_circle_outline,
+                              size: 32, color: Colors.red),
+                          onPressed: tempQty > 1
+                              ? () {
+                                  setDlgState(() {
+                                    tempQty--;
+                                    textController.text = tempQty.toString();
+                                  });
+                                }
+                              : null,
+                        ),
+                        SizedBox(
+                          width: 80,
+                          child: TextField(
+                            controller: textController,
+                            keyboardType: TextInputType.number,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                                fontSize: 20, fontWeight: FontWeight.bold),
+                            decoration: const InputDecoration(
+                              contentPadding: EdgeInsets.symmetric(vertical: 8),
+                              border: OutlineInputBorder(),
+                            ),
+                            onChanged: (val) {
+                              final parsed = int.tryParse(val);
+                              if (parsed != null && parsed > 0) {
+                                tempQty = parsed;
+                              }
+                            },
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.add_circle_outline,
+                              size: 32, color: Colors.blue),
+                          onPressed: () {
+                            setDlgState(() {
+                              tempQty++;
+                              textController.text = tempQty.toString();
+                            });
+                          },
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(dlgCtx, null),
+                    child: const Text('취소'),
+                  ),
+                  ElevatedButton(
+                    onPressed: () {
+                      final finalVal =
+                          int.tryParse(textController.text.trim()) ?? tempQty;
+                      Navigator.pop(dlgCtx, finalVal > 0 ? finalVal : 1);
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: widget.mode == 'OUT'
+                          ? const Color(0xFFA61C24)
+                          : Colors.blue[800],
+                      foregroundColor: Colors.white,
+                    ),
+                    child: const Text('담기'),
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      );
+
+      // 선택된 자재를 메인 [선택된 자재] 리스트로 즉시 추가
+      if (selectedQty != null && selectedQty > 0) {
+        widget.onItemScanned(materialCode, displayName, selectedQty);
+      }
+    } catch (e) {
+      // ignore
+    } finally {
+      if (mounted) {
+        _scannerController.start();
+        setState(() => _isProcessing = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: MediaQuery.of(context).size.height * 0.7,
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
+                const Text('관리자 QR 스캔',
+                    style:
+                        TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
                 IconButton(
-                  icon: const Icon(Icons.flash_on, color: Colors.white),
-                  onPressed: () => _controller.toggleTorch(),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.close, color: Colors.white, size: 28),
-                  onPressed: () {
-                    if (_sessionItems.isNotEmpty)
-                      widget.onItemsScanned(_sessionItems);
-                    Navigator.pop(context);
-                  },
+                  icon: const Icon(Icons.close),
+                  onPressed: () => Navigator.pop(context),
                 ),
               ],
             ),
           ),
-          Positioned(
-            top: 55,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-              decoration: BoxDecoration(
-                color: _isWaitingSktSerial
-                    ? const Color(0xFFF39800)
-                    : Colors.black87,
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Text(
-                _isWaitingSktSerial
-                    ? '[$_activeMatName]\nSKT 시리얼 QR/바코드를 비추세요 (${_activeSerialCount}대 등록)'
-                    : '[${widget.currentCondition} ${widget.currentAction == 'IN' ? '입고' : '출고'}] F2 자재 QR을 비추세요',
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 12,
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(16),
+                child: MobileScanner(
+                  controller: _scannerController,
+                  onDetect: _onDetect,
                 ),
               ),
             ),
           ),
-          Positioned(
-            bottom: 20,
-            child: _isWaitingSktSerial
-                ? ElevatedButton.icon(
-                    onPressed: _finishSerial,
-                    icon: const Icon(Icons.check_circle, color: Colors.white),
-                    label: Text(
-                      '스캔 완료 (${_activeSerialCount}대 등록)',
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                      ),
-                    ),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF2E7D32),
-                    ),
-                  )
-                : const SizedBox.shrink(),
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: ElevatedButton(
+                  onPressed: () => Navigator.pop(context),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF1E293B),
+                    foregroundColor: Colors.white,
+                  ),
+                  child: const Text('스캔 완료하고 목록 보기',
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 15)),
+                ),
+              ),
+            ),
           ),
         ],
       ),
