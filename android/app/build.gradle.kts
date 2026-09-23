@@ -11,7 +11,7 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
-// key.properties 파일 읽기 설정
+// key.properties 파일 읽기 설정 (Kotlin DSL 표준)
 val keystoreProperties = Properties()
 val keystorePropertiesFile = rootProject.file("key.properties")
 if (keystorePropertiesFile.exists()) {
@@ -40,21 +40,21 @@ android {
         versionName = flutter.versionName
     }
 
-    // 공통 서명 등록
+    // 서명 키 등록
     signingConfigs {
         create("release") {
             keyAlias = keystoreProperties.getProperty("keyAlias")
             keyPassword = keystoreProperties.getProperty("keyPassword")
+            storeFile = keystoreProperties.getProperty("storeFile")?.let { file(it) }
             storePassword = keystoreProperties.getProperty("storePassword")
-            val keyPath = keystoreProperties.getProperty("storeFile")
-            storeFile = if (keyPath != null) file(keyPath) else null
         }
     }
 
     buildTypes {
         release {
-            // 우리가 등록한 공통 release 서명 적용
             signingConfig = signingConfigs.getByName("release")
+            isMinifyEnabled = false
+            isShrinkResources = false
         }
     }
 }
