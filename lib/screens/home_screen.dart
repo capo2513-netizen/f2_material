@@ -172,11 +172,11 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const SizedBox(height: 12),
 
-              // 2. 자재 출고 등록 (모든 사용자 공통)
+              // 2. 자재 입출고 등록 (모든 사용자 공통)
               _buildMenuCard(
-                title: '자재 출고 등록',
-                subtitle: 'QR 코드 스캔 및 규격 리스트를 통한 출고',
-                icon: Icons.qr_code_scanner,
+                title: '자재 입출고 등록',
+                subtitle: 'QR 코드 스캔 및 규격 리스트를 통한 출고 및 반납',
+                icon: Icons.swap_horiz_rounded,
                 accentColor: const Color(0xFFA61C24),
                 onTap: () {
                   Navigator.push(
@@ -191,10 +191,10 @@ class _HomeScreenState extends State<HomeScreen> {
               // 3. 관리자 전용 메뉴 영역 (admin 또는 super_admin 만 노출)
               if (user.role == 'admin' || user.role == 'super_admin') ...[
                 const SizedBox(height: 12),
-                // 1) 출고내역 검수
+                // 1) 입출고내역 검수
                 _buildMenuCard(
-                  title: '출고내역 검수',
-                  subtitle: '작업자별 일자별 출고 내역 및 수량 실시간 검수',
+                  title: '입출고내역 검수',
+                  subtitle: '작업자별 일자별 입·출고 내역 및 수량 실시간 검수',
                   icon: Icons.assignment_turned_in_outlined,
                   accentColor: const Color(0xFF2C3E50),
                   onTap: () {

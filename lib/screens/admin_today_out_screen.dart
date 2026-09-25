@@ -11,6 +11,7 @@ class AdminTodayOutScreen extends StatefulWidget {
 
 class _AdminTodayOutScreenState extends State<AdminTodayOutScreen> {
   String _selectedWarehouse = '전체'; // 전체, 광주, 본사
+  String _selectedTradeType = '전체'; // 전체, 출고, 입고(반납)
   DateTime _selectedDate = DateTime.now(); // 기본 오늘 날짜
 
   static const String _prefWarehouseKey = 'admin_last_selected_warehouse';
@@ -78,14 +79,14 @@ class _AdminTodayOutScreenState extends State<AdminTodayOutScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('출고내역 검수',
+        title: const Text('입출고내역 검수',
             style: TextStyle(fontWeight: FontWeight.bold)),
         backgroundColor: const Color(0xFF2C3E50),
         foregroundColor: Colors.white,
       ),
       body: Column(
         children: [
-          // 상단: 날짜 선택 & 거점 필터
+          // 상단: 날짜 선택 & 거점 / 구분 필터
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             color: Colors.white,
@@ -169,6 +170,7 @@ class _AdminTodayOutScreenState extends State<AdminTodayOutScreen> {
                   ],
                 ),
                 const SizedBox(height: 6),
+
                 // 2) 거점 선택 ChoiceChips
                 Row(
                   children: [
@@ -198,12 +200,49 @@ class _AdminTodayOutScreenState extends State<AdminTodayOutScreen> {
                     }).toList(),
                   ],
                 ),
+                const SizedBox(height: 6),
+
+                // 3) 구분 선택 ChoiceChips (전체 / 출고 / 입고·반납)
+                Row(
+                  children: [
+                    const Text('구분: ',
+                        style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.grey)),
+                    ...['전체', '출고', '입고(반납)'].map((type) {
+                      final isSelected = _selectedTradeType == type;
+                      return Padding(
+                        padding: const EdgeInsets.only(left: 6),
+                        child: ChoiceChip(
+                          label: Text(type),
+                          selected: isSelected,
+                          selectedColor: type == '출고'
+                              ? const Color(0xFFA61C24)
+                              : (type == '입고(반납)'
+                                  ? const Color(0xFF1E88E5)
+                                  : const Color(0xFF2C3E50)),
+                          labelStyle: TextStyle(
+                            color: isSelected ? Colors.white : Colors.black87,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
+                          onSelected: (val) {
+                            if (val) {
+                              setState(() => _selectedTradeType = type);
+                            }
+                          },
+                        ),
+                      );
+                    }).toList(),
+                  ],
+                ),
               ],
             ),
           ),
           const Divider(height: 1),
 
-          // Firestore 실시간 구독: 선택된 dateStr 기준
+          // Firestore 실시간 구독: 단일 필터 쿼리 유지 (복합 인덱스 요구 차단)
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
               stream: FirebaseFirestore.instance
@@ -224,7 +263,7 @@ class _AdminTodayOutScreenState extends State<AdminTodayOutScreen> {
                             size: 50, color: Colors.grey[400]),
                         const SizedBox(height: 10),
                         Text(
-                          '[$dateStr]\n해당 일자의 출고 내역이 없습니다.',
+                          '[$dateStr]\n해당 일자의 입출고 내역이 없습니다.',
                           textAlign: TextAlign.center,
                           style:
                               TextStyle(color: Colors.grey[600], fontSize: 14),
@@ -235,6 +274,8 @@ class _AdminTodayOutScreenState extends State<AdminTodayOutScreen> {
                 }
 
                 var docs = snapshot.data!.docs;
+
+                // 1) 거점 필터링
                 if (_selectedWarehouse != '전체') {
                   docs = docs.where((d) {
                     final data = d.data() as Map<String, dynamic>;
@@ -242,19 +283,42 @@ class _AdminTodayOutScreenState extends State<AdminTodayOutScreen> {
                   }).toList();
                 }
 
+                // 2) 구분 필터링 (출고 vs 입고/반납)
+                if (_selectedTradeType != '전체') {
+                  docs = docs.where((d) {
+                    final data = d.data() as Map<String, dynamic>;
+                    final t = (data['type'] ?? '출고').toString();
+                    if (_selectedTradeType == '입고(반납)') {
+                      return t.contains('입고');
+                    } else {
+                      return t == '출고';
+                    }
+                  }).toList();
+                }
+
                 if (docs.isEmpty) {
                   return Center(
                     child: Text(
-                        '[$dateStr] [$_selectedWarehouse] 거점의 출고 내역이 없습니다.'),
+                        '[$dateStr] [$_selectedWarehouse / $_selectedTradeType] 조건의 내역이 없습니다.'),
                   );
                 }
 
-                // 작업자별 그룹화
+                // 3) 클라이언트 메모리 정렬 (최신 시간순)
+                final logList = docs.map((d) {
+                  final data = d.data() as Map<String, dynamic>;
+                  data['docId'] = d.id;
+                  return data;
+                }).toList();
+
+                logList.sort((a, b) => (b['outTime'] ?? '')
+                    .toString()
+                    .compareTo((a['outTime'] ?? '').toString()));
+
+                // 4) 작업자별 그룹화
                 final Map<String, List<Map<String, dynamic>>> groupedByUser =
                     {};
 
-                for (var doc in docs) {
-                  final data = doc.data() as Map<String, dynamic>;
+                for (var data in logList) {
                   final team = data['team'] ?? '미지정';
                   final userName = data['userName'] ?? '작업자';
                   final userKey = '[$team] $userName';
@@ -272,9 +336,17 @@ class _AdminTodayOutScreenState extends State<AdminTodayOutScreen> {
                     final userKey = userKeys[index];
                     final userLogs = groupedByUser[userKey]!;
 
-                    int totalQty = 0;
+                    int totalOutQty = 0;
+                    int totalInQty = 0;
+
                     for (var log in userLogs) {
-                      totalQty += (log['quantity'] as num? ?? 1).toInt();
+                      final q = (log['quantity'] as num? ?? 1).toInt();
+                      final t = (log['type'] ?? '출고').toString();
+                      if (t.contains('입고')) {
+                        totalInQty += q;
+                      } else {
+                        totalOutQty += q;
+                      }
                     }
 
                     final phone = userLogs.first['userPhone'] ?? '';
@@ -300,7 +372,7 @@ class _AdminTodayOutScreenState extends State<AdminTodayOutScreen> {
                                     : const Color(0xFF2C3E50),
                                 foregroundColor: Colors.white,
                                 child: Text(
-                                  warehouse.isNotEmpty ? warehouse[0] : '출',
+                                  warehouse.isNotEmpty ? warehouse[0] : '물',
                                   style: const TextStyle(
                                       fontWeight: FontWeight.bold),
                                 ),
@@ -339,7 +411,7 @@ class _AdminTodayOutScreenState extends State<AdminTodayOutScreen> {
                                     ),
                                     const SizedBox(height: 4),
                                     Text(
-                                      '연락처: $phone | 총 ${userLogs.length}건 등록',
+                                      '연락처: $phone | 총 ${userLogs.length}건 기록',
                                       style: TextStyle(
                                           fontSize: 12,
                                           color: Colors.grey[600]),
@@ -350,14 +422,25 @@ class _AdminTodayOutScreenState extends State<AdminTodayOutScreen> {
                               Column(
                                 crossAxisAlignment: CrossAxisAlignment.end,
                                 children: [
-                                  Text(
-                                    '$totalQty개',
-                                    style: const TextStyle(
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.bold,
-                                      color: Color(0xFFA61C24),
+                                  if (totalOutQty > 0)
+                                    Text(
+                                      '출고: -${totalOutQty}개',
+                                      style: const TextStyle(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.bold,
+                                        color: Color(0xFFA61C24),
+                                      ),
                                     ),
-                                  ),
+                                  if (totalInQty > 0)
+                                    Text(
+                                      '입고: +${totalInQty}개',
+                                      style: const TextStyle(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.bold,
+                                        color: Color(0xFF1E88E5),
+                                      ),
+                                    ),
+                                  const SizedBox(height: 2),
                                   const Text('상세보기 >',
                                       style: TextStyle(
                                           fontSize: 11,
@@ -379,7 +462,7 @@ class _AdminTodayOutScreenState extends State<AdminTodayOutScreen> {
     );
   }
 
-  // 작업자 출고 상세 모달
+  // 작업자 입출고 상세 모달
   void _showUserDetailModal(
     BuildContext context,
     String userTitle,
@@ -399,7 +482,7 @@ class _AdminTodayOutScreenState extends State<AdminTodayOutScreen> {
       ),
       builder: (ctx) {
         return Container(
-          height: MediaQuery.of(context).size.height * 0.75,
+          height: MediaQuery.of(context).size.height * 0.8,
           padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -429,7 +512,7 @@ class _AdminTodayOutScreenState extends State<AdminTodayOutScreen> {
               ),
               const Divider(height: 16),
               Text(
-                '출고 상세 항목 (${logs.length}개)',
+                '상세 내역 (${logs.length}건)',
                 style:
                     const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
               ),
@@ -445,25 +528,49 @@ class _AdminTodayOutScreenState extends State<AdminTodayOutScreen> {
                     final code = item['materialCode'] ?? '';
                     final qty = item['quantity'] ?? 1;
                     final serial = item['sktSerial'] ?? '';
+                    final type = (item['type'] ?? '출고').toString();
+                    final memo = (item['memo'] ?? '').toString().trim();
+                    final isReturn = type.contains('입고');
 
                     return Padding(
                       padding: const EdgeInsets.symmetric(vertical: 8),
                       child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 6, vertical: 3),
-                            decoration: BoxDecoration(
-                              color: Colors.grey[100],
-                              borderRadius: BorderRadius.circular(4),
-                              border: Border.all(color: Colors.grey[300]!),
-                            ),
-                            child: Text(
-                              time,
-                              style: const TextStyle(
-                                  fontSize: 11, fontWeight: FontWeight.w600),
-                            ),
+                          Column(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: isReturn
+                                      ? const Color(0xFFE3F2FD)
+                                      : const Color(0xFFFFEBEE),
+                                  borderRadius: BorderRadius.circular(4),
+                                  border: Border.all(
+                                    color: isReturn
+                                        ? const Color(0xFF90CAF9)
+                                        : const Color(0xFFFFCDD2),
+                                  ),
+                                ),
+                                child: Text(
+                                  type,
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                    color: isReturn
+                                        ? const Color(0xFF1E88E5)
+                                        : const Color(0xFFA61C24),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                time,
+                                style: TextStyle(
+                                    fontSize: 10, color: Colors.grey[600]),
+                              ),
+                            ],
                           ),
                           const SizedBox(width: 10),
                           Expanded(
@@ -482,15 +589,37 @@ class _AdminTodayOutScreenState extends State<AdminTodayOutScreen> {
                                   style: TextStyle(
                                       fontSize: 11, color: Colors.grey[600]),
                                 ),
+                                if (memo.isNotEmpty) ...[
+                                  const SizedBox(height: 4),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 8, vertical: 3),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFF8FAFC),
+                                      borderRadius: BorderRadius.circular(4),
+                                      border: Border.all(
+                                          color: const Color(0xFFE2E8F0)),
+                                    ),
+                                    child: Text(
+                                      '메모: $memo',
+                                      style: const TextStyle(
+                                          fontSize: 11,
+                                          color: Color(0xFF334155)),
+                                    ),
+                                  ),
+                                ],
                               ],
                             ),
                           ),
+                          const SizedBox(width: 6),
                           Text(
-                            '$qty개',
-                            style: const TextStyle(
+                            isReturn ? '+$qty개' : '-$qty개',
+                            style: TextStyle(
                               fontSize: 16,
                               fontWeight: FontWeight.bold,
-                              color: Color(0xFFA61C24),
+                              color: isReturn
+                                  ? const Color(0xFF1E88E5)
+                                  : const Color(0xFFA61C24),
                             ),
                           ),
                         ],
