@@ -6,9 +6,7 @@
     <uses-permission android:name="android.permission.VIBRATE" />
 
     <!-- 외부 라이브러리가 몰래 추가하는 패키지 설치 권한을 강제 삭제하여 구글 동영상 심사를 우회함 -->
-    <uses-permission 
-        android:name="android.permission.REQUEST_INSTALL_PACKAGES" 
-        tools:node="remove" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:label="F2자재"

@@ -11,14 +11,19 @@ class UpdateService {
   /// 버전 체크 및 업데이트 다이얼로그 호출
   static Future<void> checkVersionAndShowDialog(BuildContext context) async {
     try {
-      final doc = await FirebaseFirestore.instance.collection('app_config').doc('version').get();
+      final doc = await FirebaseFirestore.instance
+          .collection('app_config')
+          .doc('version')
+          .get();
       if (!doc.exists || doc.data() == null) return;
 
       final data = doc.data()!;
       final int serverVersionCode = (data['latestVersionCode'] ?? 1) as int;
-      final String versionName = (data['latestVersionName'] ?? '1.0.0').toString();
+      final String versionName =
+          (data['latestVersionName'] ?? '1.0.0').toString();
       final String apkUrl = (data['apkDownloadUrl'] ?? '').toString();
-      final String releaseNotes = (data['releaseNotes'] ?? '안정성 개선 및 버그 수정').toString();
+      final String releaseNotes =
+          (data['releaseNotes'] ?? '안정성 개선 및 버그 수정').toString();
 
       // 현재 설치된 앱의 빌드 번호 확인 (pubspec.yaml의 +뒤의 숫자)
       final packageInfo = await PackageInfo.fromPlatform();
@@ -73,17 +78,18 @@ class _UpdateProgressDialog extends StatefulWidget {
   State<_UpdateProgressDialog> createState() => _UpdateProgressDialogState();
 }
 
-class _UpdateProgressDialogState extends State<_UpdateProgressDialog> with WidgetsBindingObserver {
+class _UpdateProgressDialogState extends State<_UpdateProgressDialog>
+    with WidgetsBindingObserver {
   bool _isDownloading = false;
   double _progress = 0.0;
   String _statusText = '';
-  String? _downloadedApkPath; // 다운로드 완료된 APK 경로 저장
-  bool _isWaitingInstall = false; // 설치 승인 대기 플래그
+  String? _downloadedApkPath;
+  bool _isWaitingInstall = false;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this); // 앱 라이프사이클 관찰 시작
+    WidgetsBinding.instance.addObserver(this);
   }
 
   @override
@@ -92,11 +98,9 @@ class _UpdateProgressDialogState extends State<_UpdateProgressDialog> with Widge
     super.dispose();
   }
 
-  // 사용자가 스마트폰 시스템 설정(보안 해제 등)을 하고 앱으로 다시 돌아왔을 때 자동 감지
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && _isWaitingInstall) {
-      // 앱 복귀 시 멈춤을 풀고 버튼을 다시 활성화
       setState(() {
         _isDownloading = false;
         _statusText = '보안 설정을 완료하셨다면 아래 버튼을 눌러 설치를 완료해 주세요.';
@@ -104,23 +108,40 @@ class _UpdateProgressDialogState extends State<_UpdateProgressDialog> with Widge
     }
   }
 
+  /// APK 저장 가능한 최적의 외부 공개 경로 탐색
+  Future<String> _getApkSavePath() async {
+    Directory? targetDir;
+    if (Platform.isAndroid) {
+      // 1순위: 외부 저장소 다운로드 경로 또는 앱 외부 디렉토리
+      targetDir = await getExternalStorageDirectory();
+    }
+    // 대체: 일반 임시 경로
+    targetDir ??= await getTemporaryDirectory();
+    return '${targetDir.path}/F2자재_update.apk';
+  }
+
   /// 다운로드 및 설치 실행 함수
   Future<void> _startDownloadAndInstall() async {
-    // 1. 이미 받아둔 파일이 온전히 존재하는 경우 재다운로드 생략하고 설치 창 호출
-    if (_downloadedApkPath != null && await File(_downloadedApkPath!).exists()) {
+    final savePath = await _getApkSavePath();
+
+    // 1. 이미 받아둔 파일이 온전히 존재하는 경우 재다운로드 없이 바로 설치 창 호출
+    if (_downloadedApkPath != null &&
+        await File(_downloadedApkPath!).exists()) {
       await _launchInstaller(_downloadedApkPath!);
       return;
     }
 
-    // 2. 알 수 없는 앱 설치 권한 확인
+    // 2. 알 수 없는 앱 설치 권한 선제적 확인/요청
     if (Platform.isAndroid) {
       final status = await Permission.requestInstallPackages.status;
       if (!status.isGranted) {
-        setState(() {
-          _statusText = '안내: 설치 권한 또는 갤럭시 [보안 위험 자동 차단]을 해제해야 설치가 가능합니다.';
-          _isWaitingInstall = true;
-        });
-        await Permission.requestInstallPackages.request();
+        final reqResult = await Permission.requestInstallPackages.request();
+        if (!reqResult.isGranted) {
+          setState(() {
+            _statusText = '안내: [출처를 알 수 없는 앱 설치] 권한을 허용해야 업데이트가 진행됩니다.';
+            _isWaitingInstall = true;
+          });
+        }
       }
     }
 
@@ -132,9 +153,6 @@ class _UpdateProgressDialogState extends State<_UpdateProgressDialog> with Widge
     });
 
     try {
-      final dir = await getTemporaryDirectory();
-      final savePath = '${dir.path}/app-update.apk';
-
       final existingFile = File(savePath);
       if (await existingFile.exists()) {
         await existingFile.delete();
@@ -148,7 +166,8 @@ class _UpdateProgressDialogState extends State<_UpdateProgressDialog> with Widge
           if (total != -1) {
             setState(() {
               _progress = received / total;
-              _statusText = '다운로드 중... ${(_progress * 100).toStringAsFixed(0)}%';
+              _statusText =
+                  '다운로드 중... ${(_progress * 100).toStringAsFixed(0)}%';
             });
           }
         },
@@ -158,7 +177,7 @@ class _UpdateProgressDialogState extends State<_UpdateProgressDialog> with Widge
       await _launchInstaller(savePath);
     } catch (e) {
       setState(() {
-        _statusText = '다운로드 실패: 네트워크를 확인해 주세요.';
+        _statusText = '다운로드 실패: 네트워크 또는 저장공간을 확인해 주세요.';
         _isDownloading = false;
         _isWaitingInstall = false;
       });
@@ -169,15 +188,28 @@ class _UpdateProgressDialogState extends State<_UpdateProgressDialog> with Widge
   Future<void> _launchInstaller(String path) async {
     setState(() {
       _isDownloading = false;
-      _isWaitingInstall = true; // 설치 화면으로 나갔음을 표시
+      _isWaitingInstall = true;
       _statusText = '설치 관리자 실행 중...';
     });
 
-    final result = await OpenFilex.open(path, type: "application/vnd.android.package-archive");
-    
+    final file = File(path);
+    if (!await file.exists()) {
+      setState(() {
+        _downloadedApkPath = null;
+        _statusText = '파일을 찾을 수 없습니다. 다시 다운로드해 주세요.';
+      });
+      return;
+    }
+
+    // MIME 타입을 명시적으로 지정하여 설치 프로그램 호출
+    final result = await OpenFilex.open(
+      path,
+      type: "application/vnd.android.package-archive",
+    );
+
     if (result.type != ResultType.done) {
       setState(() {
-        _statusText = '설치가 중단되었습니다. 보안 해제 후 아래 버튼을 다시 눌러주세요.';
+        _statusText = '설치 창이 열리지 않을 경우, 갤럭시 [보안 위험 자동 차단]을 해제 후 다시 시도해 주세요.';
       });
     }
   }
@@ -188,7 +220,8 @@ class _UpdateProgressDialogState extends State<_UpdateProgressDialog> with Widge
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       title: Row(
         children: [
-          const Icon(Icons.system_update_rounded, color: Color(0xFFA61C24), size: 28),
+          const Icon(Icons.system_update_rounded,
+              color: Color(0xFFA61C24), size: 28),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
@@ -220,15 +253,18 @@ class _UpdateProgressDialogState extends State<_UpdateProgressDialog> with Widge
               children: [
                 const Text(
                   '[주요 개선 내용]',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Color(0xFFA61C24)),
+                  style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 12,
+                      color: Color(0xFFA61C24)),
                 ),
                 const SizedBox(height: 4),
-                Text(widget.releaseNotes, style: const TextStyle(fontSize: 12, color: Colors.black87)),
+                Text(widget.releaseNotes,
+                    style:
+                        const TextStyle(fontSize: 12, color: Colors.black87)),
               ],
             ),
           ),
-
-          // 갤럭시 보안 자동 차단 주의 문구 상시 안내
           const SizedBox(height: 8),
           Container(
             padding: const EdgeInsets.all(8),
@@ -251,7 +287,6 @@ class _UpdateProgressDialogState extends State<_UpdateProgressDialog> with Widge
               ],
             ),
           ),
-
           if (_isDownloading) ...[
             const SizedBox(height: 16),
             LinearProgressIndicator(
@@ -263,7 +298,10 @@ class _UpdateProgressDialogState extends State<_UpdateProgressDialog> with Widge
             Center(
               child: Text(
                 _statusText,
-                style: const TextStyle(fontSize: 12, color: Colors.grey, fontWeight: FontWeight.bold),
+                style: const TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey,
+                    fontWeight: FontWeight.bold),
               ),
             ),
           ] else if (_statusText.isNotEmpty) ...[
@@ -272,7 +310,9 @@ class _UpdateProgressDialogState extends State<_UpdateProgressDialog> with Widge
               _statusText,
               style: TextStyle(
                 fontSize: 12,
-                color: _downloadedApkPath != null ? const Color(0xFF1E88E5) : Colors.red,
+                color: _downloadedApkPath != null
+                    ? const Color(0xFF1E88E5)
+                    : Colors.red,
                 fontWeight: FontWeight.bold,
               ),
             ),
@@ -286,14 +326,19 @@ class _UpdateProgressDialogState extends State<_UpdateProgressDialog> with Widge
           child: ElevatedButton(
             onPressed: _isDownloading ? null : _startDownloadAndInstall,
             style: ElevatedButton.styleFrom(
-              backgroundColor: _downloadedApkPath != null ? const Color(0xFFF39800) : const Color(0xFFA61C24),
+              backgroundColor: _downloadedApkPath != null
+                  ? const Color(0xFFF39800)
+                  : const Color(0xFFA61C24),
               foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8)),
             ),
             child: Text(
               _isDownloading
                   ? '다운로드 진행 중...'
-                  : (_downloadedApkPath != null ? '보안 설정 완료 후 설치 계속하기' : '지금 바로 업데이트'),
+                  : (_downloadedApkPath != null
+                      ? '보안 설정 완료 후 설치 계속하기'
+                      : '지금 바로 업데이트'),
               style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
             ),
           ),

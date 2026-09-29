@@ -14,16 +14,22 @@ class SktBarcodeScanScreen extends StatefulWidget {
 }
 
 class _SktBarcodeScanScreenState extends State<SktBarcodeScanScreen> {
+  // ★ Code39 다시 복구! (Code128, Code39, QR, DataMatrix 모두 감지)
   final MobileScannerController _scannerController = MobileScannerController(
-    detectionSpeed: DetectionSpeed.noDuplicates,
+    detectionSpeed: DetectionSpeed.normal, // 무차별 프레임 읽기 방지
+    formats: const [
+      BarcodeFormat.code128,
+      BarcodeFormat.code39,
+      BarcodeFormat.qrCode,
+      BarcodeFormat.dataMatrix,
+    ],
   );
 
   final TextEditingController _memoController = TextEditingController();
   final List<String> _scannedList = [];
 
   bool _isSubmitting = false;
-  String? _lastScannedCode;
-  DateTime? _lastScannedTime;
+  DateTime? _lastScanTime;
 
   @override
   void dispose() {
@@ -32,7 +38,7 @@ class _SktBarcodeScanScreenState extends State<SktBarcodeScanScreen> {
     super.dispose();
   }
 
-  // 바코드/QR 감지 처리 (연속 스캔)
+  // 바코드/QR 감지 처리
   void _onDetect(BarcodeCapture capture) {
     if (_isSubmitting) return;
 
@@ -40,31 +46,35 @@ class _SktBarcodeScanScreenState extends State<SktBarcodeScanScreen> {
     final rawVal = barcode?.rawValue?.trim();
     if (rawVal == null || rawVal.isEmpty) return;
 
-    // 1.2초 내 동일 바코드 중복 스캔 방지
+    // 1. 최소 길이 체크 (통신 장비 바코드는 보통 6자리 이상)
+    if (rawVal.length < 6) return;
+
+    // 2. 스캔 쿨타임 (1초 동안은 추가 스캔 잠금)
     final now = DateTime.now();
-    if (_lastScannedCode == rawVal &&
-        _lastScannedTime != null &&
-        now.difference(_lastScannedTime!).inMilliseconds < 1200) {
+    if (_lastScanTime != null &&
+        now.difference(_lastScanTime!).inMilliseconds < 1000) {
       return;
     }
 
-    _lastScannedCode = rawVal;
-    _lastScannedTime = now;
+    // 3. 이미 목록에 있는 바코드면 무시 (중복 스캔 방지)
+    if (_scannedList.contains(rawVal)) {
+      return;
+    }
+
+    _lastScanTime = now;
 
     // 햅틱 진동 피드백
     HapticFeedback.mediumImpact();
 
     setState(() {
-      if (!_scannedList.contains(rawVal)) {
-        _scannedList.insert(0, rawVal); // 최신 스캔 항목이 맨 위로
-      }
+      _scannedList.insert(0, rawVal); // 최신 스캔 항목이 맨 위로
     });
 
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('스캔 완료: $rawVal'),
-        duration: const Duration(milliseconds: 900),
+        duration: const Duration(milliseconds: 800),
         behavior: SnackBarBehavior.floating,
       ),
     );
@@ -180,7 +190,7 @@ class _SktBarcodeScanScreenState extends State<SktBarcodeScanScreen> {
           'userName': widget.currentUser.name,
           'userPhone': widget.currentUser.phone,
           'barcode': code,
-          'memo': memo, // 국소명 및 메모
+          'memo': memo,
           'syncedToExcel': false,
         });
       }
@@ -204,7 +214,7 @@ class _SktBarcodeScanScreenState extends State<SktBarcodeScanScreen> {
             ElevatedButton(
               onPressed: () {
                 Navigator.pop(ctx);
-                Navigator.pop(context); // 이전 메인 화면으로 복귀
+                Navigator.pop(context);
               },
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFFE65100),
@@ -231,7 +241,7 @@ class _SktBarcodeScanScreenState extends State<SktBarcodeScanScreen> {
       appBar: AppBar(
         title: const Text('SKT 바코드 전송',
             style: TextStyle(fontWeight: FontWeight.bold)),
-        backgroundColor: const Color(0xFFE65100), // SKT 느낌의 오렌지 테마
+        backgroundColor: const Color(0xFFE65100),
         foregroundColor: Colors.white,
         actions: [
           IconButton(
@@ -248,7 +258,7 @@ class _SktBarcodeScanScreenState extends State<SktBarcodeScanScreen> {
       ),
       body: Column(
         children: [
-          // 1. 상단 슬림 카메라 스캐너 영역 (1D/2D 공용)
+          // 1. 상단 슬림 카메라 스캐너 영역
           Container(
             color: Colors.black,
             child: Stack(
@@ -262,7 +272,6 @@ class _SktBarcodeScanScreenState extends State<SktBarcodeScanScreen> {
                     onDetect: _onDetect,
                   ),
                 ),
-                // 슬림 타겟 조준선 박스
                 Container(
                   width: 280,
                   height: 110,
