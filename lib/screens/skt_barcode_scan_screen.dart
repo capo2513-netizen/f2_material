@@ -1,0 +1,431 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
+import '../models/user_model.dart';
+
+class SktBarcodeScanScreen extends StatefulWidget {
+  final UserModel currentUser;
+
+  const SktBarcodeScanScreen({super.key, required this.currentUser});
+
+  @override
+  State<SktBarcodeScanScreen> createState() => _SktBarcodeScanScreenState();
+}
+
+class _SktBarcodeScanScreenState extends State<SktBarcodeScanScreen> {
+  final MobileScannerController _scannerController = MobileScannerController(
+    detectionSpeed: DetectionSpeed.noDuplicates,
+  );
+
+  final TextEditingController _memoController = TextEditingController();
+  final List<String> _scannedList = [];
+
+  bool _isSubmitting = false;
+  String? _lastScannedCode;
+  DateTime? _lastScannedTime;
+
+  @override
+  void dispose() {
+    _scannerController.dispose();
+    _memoController.dispose();
+    super.dispose();
+  }
+
+  // 바코드/QR 감지 처리 (연속 스캔)
+  void _onDetect(BarcodeCapture capture) {
+    if (_isSubmitting) return;
+
+    final barcode = capture.barcodes.firstOrNull;
+    final rawVal = barcode?.rawValue?.trim();
+    if (rawVal == null || rawVal.isEmpty) return;
+
+    // 1.2초 내 동일 바코드 중복 스캔 방지
+    final now = DateTime.now();
+    if (_lastScannedCode == rawVal &&
+        _lastScannedTime != null &&
+        now.difference(_lastScannedTime!).inMilliseconds < 1200) {
+      return;
+    }
+
+    _lastScannedCode = rawVal;
+    _lastScannedTime = now;
+
+    // 햅틱 진동 피드백
+    HapticFeedback.mediumImpact();
+
+    setState(() {
+      if (!_scannedList.contains(rawVal)) {
+        _scannedList.insert(0, rawVal); // 최신 스캔 항목이 맨 위로
+      }
+    });
+
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('스캔 완료: $rawVal'),
+        duration: const Duration(milliseconds: 900),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  // 바코드 직접 수동 입력 다이얼로그 (라벨 훼손 대비)
+  Future<void> _manualAddBarcode() async {
+    final textController = TextEditingController();
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('바코드 직접 입력',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+        content: TextField(
+          controller: textController,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: '바코드 / 시리얼 번호',
+            hintText: '예: 6265UF090600B',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, null),
+            child: const Text('취소'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final val = textController.text.trim();
+              if (val.isNotEmpty) {
+                Navigator.pop(ctx, val);
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFE65100),
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('추가'),
+          ),
+        ],
+      ),
+    );
+
+    if (result != null && result.isNotEmpty) {
+      setState(() {
+        if (!_scannedList.contains(result)) {
+          _scannedList.insert(0, result);
+        }
+      });
+    }
+  }
+
+  // 최종 서버 일괄 전송
+  Future<void> _submitAll() async {
+    if (_scannedList.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('스캔된 바코드가 없습니다.')),
+      );
+      return;
+    }
+
+    final memo = _memoController.text.trim();
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('SKT 바코드 전송 확인',
+            style: TextStyle(fontWeight: FontWeight.bold)),
+        content: Text(
+          '총 ${_scannedList.length}개의 바코드를 전송하시겠습니까?\n\n'
+          '국소명/메모: ${memo.isEmpty ? '(없음)' : memo}',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('취소'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFE65100),
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('전송'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    setState(() => _isSubmitting = true);
+
+    try {
+      final now = DateTime.now();
+      final dateStr =
+          '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+      final timeStr =
+          '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
+
+      final firestore = FirebaseFirestore.instance;
+      final batch = firestore.batch();
+      final collection = firestore.collection('skt_barcodes');
+
+      for (var code in _scannedList) {
+        final docRef = collection.doc();
+        batch.set(docRef, {
+          'timestamp': FieldValue.serverTimestamp(),
+          'regDate': dateStr,
+          'regTime': timeStr,
+          'team': widget.currentUser.team,
+          'userName': widget.currentUser.name,
+          'userPhone': widget.currentUser.phone,
+          'barcode': code,
+          'memo': memo, // 국소명 및 메모
+          'syncedToExcel': false,
+        });
+      }
+
+      await batch.commit();
+
+      if (!mounted) return;
+      setState(() {
+        _scannedList.clear();
+        _memoController.clear();
+        _isSubmitting = false;
+      });
+
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('전송 완료',
+              style: TextStyle(fontWeight: FontWeight.bold)),
+          content: const Text('SKT 바코드가 성공적으로 전송되었습니다.\n엑셀에서 동기화할 수 있습니다.'),
+          actions: [
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                Navigator.pop(context); // 이전 메인 화면으로 복귀
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFE65100),
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('확인'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isSubmitting = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('전송 중 오류 발생: $e')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF8F9FA),
+      appBar: AppBar(
+        title: const Text('SKT 바코드 전송',
+            style: TextStyle(fontWeight: FontWeight.bold)),
+        backgroundColor: const Color(0xFFE65100), // SKT 느낌의 오렌지 테마
+        foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.keyboard),
+            tooltip: '바코드 수동 입력',
+            onPressed: _manualAddBarcode,
+          ),
+          IconButton(
+            icon: const Icon(Icons.flash_on),
+            tooltip: '플래시 토글',
+            onPressed: () => _scannerController.toggleTorch(),
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          // 1. 상단 슬림 카메라 스캐너 영역 (1D/2D 공용)
+          Container(
+            color: Colors.black,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                SizedBox(
+                  height: 180,
+                  width: double.infinity,
+                  child: MobileScanner(
+                    controller: _scannerController,
+                    onDetect: _onDetect,
+                  ),
+                ),
+                // 슬림 타겟 조준선 박스
+                Container(
+                  width: 280,
+                  height: 110,
+                  decoration: BoxDecoration(
+                    border:
+                        Border.all(color: const Color(0xFFE65100), width: 2),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          // 2. 국소명 / 공통 메모 입력란
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            color: Colors.white,
+            child: TextField(
+              controller: _memoController,
+              decoration: InputDecoration(
+                hintText: '국소명 / 메모 입력 (선택사항, 예: 하남감이천WRHU 철거 건)',
+                hintStyle: TextStyle(fontSize: 13, color: Colors.grey[400]),
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                prefixIcon: const Icon(Icons.edit_location_alt,
+                    color: Color(0xFFE65100), size: 20),
+              ),
+            ),
+          ),
+          const Divider(height: 1),
+
+          // 3. 스캔 목록 헤더
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  '스캔 목록 (${_scannedList.length}건)',
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 14),
+                ),
+                if (_scannedList.isNotEmpty)
+                  InkWell(
+                    onTap: () => setState(() => _scannedList.clear()),
+                    child: const Text('전체 비우기',
+                        style: TextStyle(
+                            color: Colors.red,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold)),
+                  ),
+              ],
+            ),
+          ),
+
+          // 4. 스캔된 바코드 리스트
+          Expanded(
+            child: _scannedList.isEmpty
+                ? Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.qr_code_scanner,
+                            size: 48, color: Colors.grey[300]),
+                        const SizedBox(height: 8),
+                        Text(
+                          'SKT 장비 바코드나 QR코드를 비춰주세요.\n연속으로 계속 스캔할 수 있습니다.',
+                          textAlign: TextAlign.center,
+                          style:
+                              TextStyle(color: Colors.grey[500], fontSize: 13),
+                        ),
+                      ],
+                    ),
+                  )
+                : ListView.separated(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                    itemCount: _scannedList.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 6),
+                    itemBuilder: (ctx, idx) {
+                      final code = _scannedList[idx];
+                      return Card(
+                        margin: EdgeInsets.zero,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8)),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 8),
+                          child: Row(
+                            children: [
+                              CircleAvatar(
+                                radius: 12,
+                                backgroundColor: const Color(0xFFFFF3E0),
+                                child: Text('${_scannedList.length - idx}',
+                                    style: const TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.bold,
+                                        color: Color(0xFFE65100))),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  code,
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 14,
+                                      letterSpacing: 0.5),
+                                ),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.close,
+                                    size: 18, color: Colors.grey),
+                                onPressed: () {
+                                  setState(() => _scannedList.removeAt(idx));
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+
+          // 5. 하단 일괄 전송 버튼
+          Container(
+            padding: const EdgeInsets.all(16),
+            color: Colors.white,
+            child: SafeArea(
+              child: SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: ElevatedButton(
+                  onPressed: (_scannedList.isEmpty || _isSubmitting)
+                      ? null
+                      : _submitAll,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFE65100),
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                  ),
+                  child: _isSubmitting
+                      ? const SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(
+                              color: Colors.white, strokeWidth: 2),
+                        )
+                      : Text(
+                          '총 ${_scannedList.length}건 SKT 바코드 전송',
+                          style: const TextStyle(
+                              fontWeight: FontWeight.bold, fontSize: 16),
+                        ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}

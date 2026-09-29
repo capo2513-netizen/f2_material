@@ -5,6 +5,7 @@ import '../services/auth_service.dart';
 import '../services/update_service.dart';
 import 'login_screen.dart';
 import 'user_out_scan_screen.dart';
+import 'skt_barcode_scan_screen.dart'; // ★ SKT 바코드 전송 화면 임포트
 import 'stock_lookup_screen.dart';
 import 'advanced_inventory_screen.dart';
 import 'admin_user_manage_screen.dart';
@@ -172,7 +173,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const SizedBox(height: 12),
 
-              // 2. 자재 입출고 등록 (모든 사용자 공통)
+              // 2-1. 자재 입출고 등록 (모든 사용자 공통)
               _buildMenuCard(
                 title: '자재 입출고 등록',
                 subtitle: 'QR 코드 스캔 및 규격 리스트를 통한 출고 및 반납',
@@ -188,9 +189,36 @@ class _HomeScreenState extends State<HomeScreen> {
                 },
               ),
 
+              const SizedBox(height: 12),
+
+              // 2-2. SKT 바코드 전송 (신규 추가: 모든 현장 사용자 사용)
+              _buildMenuCard(
+                title: 'SKT 바코드 전송',
+                subtitle: 'SKT 장비 바코드/QR 연속 스캔 및 국소 메모 전송',
+                icon: Icons.qr_code_scanner_rounded,
+                accentColor: const Color(0xFFE65100), // SKT 오렌지 테마
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => SktBarcodeScanScreen(currentUser: user),
+                    ),
+                  );
+                },
+              ),
+
               // 3. 관리자 전용 메뉴 영역 (admin 또는 super_admin 만 노출)
               if (user.role == 'admin' || user.role == 'super_admin') ...[
+                const SizedBox(height: 20),
+                const Text(
+                  '관리자 메뉴',
+                  style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF334155)),
+                ),
                 const SizedBox(height: 12),
+
                 // 1) 입출고내역 검수
                 _buildMenuCard(
                   title: '입출고내역 검수',
@@ -207,6 +235,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   },
                 ),
                 const SizedBox(height: 12),
+
                 // 2) 입·출고 종합 관리
                 _buildMenuCard(
                   title: '입·출고 종합 관리 (관리자)',
@@ -224,6 +253,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   },
                 ),
                 const SizedBox(height: 12),
+
                 // 3) 사용자 승인 및 권한 관리
                 _buildMenuCard(
                   title: '사용자 승인 및 권한 관리',
