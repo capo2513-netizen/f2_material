@@ -5,6 +5,10 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- ★ [추가] 생체인식(지문/얼굴인식) 필수 권한 -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <uses-permission android:name="android.permission.USE_FINGERPRINT" />
+
     <!-- 외부 라이브러리가 몰래 추가하는 패키지 설치 권한을 강제 삭제하여 구글 동영상 심사를 우회함 -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 

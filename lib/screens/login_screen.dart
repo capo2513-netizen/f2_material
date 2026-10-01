@@ -1,8 +1,10 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:local_auth/local_auth.dart';
 import '../services/auth_service.dart';
 import 'register_screen.dart';
 import 'pending_screen.dart';
-// 메인 화면은 다음 단계에서 생성할 예정입니다.
 import 'home_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -16,16 +18,109 @@ class _LoginScreenState extends State<LoginScreen> {
   final _phoneController = TextEditingController();
   final _passwordController = TextEditingController();
   final _authService = AuthService();
+  final _storage = const FlutterSecureStorage();
+  final _localAuth = LocalAuthentication();
+
   bool _isLoading = false;
 
+  @override
+  void initState() {
+    super.initState();
+    // 화면 빌드 완료 후 3일 이내 생체인식 자동 로그인 시도
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _checkBiometricAutoLogin();
+    });
+  }
+
+  @override
+  void dispose() {
+    _phoneController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
+  /// [핵심] 3일(72시간) 이내 접속 이력 확인 후 생체인증 자동 로그인
+  Future<void> _checkBiometricAutoLogin() async {
+    try {
+      final lastLoginStr = await _storage.read(key: 'last_login_time');
+      final savedPhone = await _storage.read(key: 'saved_phone');
+      final savedPassword = await _storage.read(key: 'saved_password');
+
+      // 저장된 로그인 정보가 없으면 일반 로그인 유지
+      if (lastLoginStr == null || savedPhone == null || savedPassword == null) {
+        return;
+      }
+
+      final lastLoginTime = DateTime.parse(lastLoginStr);
+      final difference = DateTime.now().difference(lastLoginTime);
+
+      // 마지막 로그인 후 3일(72시간) 초과 시 자동 로그인 만료
+      if (difference.inHours >= 72) {
+        return;
+      }
+
+      // 기기에서 생체인식(지문 센서 등) 지원 여부 확인
+      final canAuth = await _localAuth.canCheckBiometrics ||
+          await _localAuth.isDeviceSupported();
+      if (!canAuth) return;
+
+      // 안드로이드 지문/생체인식 팝업 호출
+      final didAuthenticate = await _localAuth.authenticate(
+        localizedReason: 'F2자재 빠른 로그인을 위해 생체인증을 진행합니다.',
+        options: const AuthenticationOptions(
+          biometricOnly: true, // 지문/얼굴인식 우선
+          stickyAuth: true,
+        ),
+      );
+
+      // 생체인증 성공 시 자동 로그인 진행
+      if (didAuthenticate && mounted) {
+        setState(() => _isLoading = true);
+        final result = await _authService.login(
+          phone: savedPhone,
+          password: savedPassword,
+        );
+        setState(() => _isLoading = false);
+
+        if (!mounted) return;
+
+        if (result['success'] == true) {
+          // 성공 시 최신 로그인 시각 갱신
+          await _storage.write(
+            key: 'last_login_time',
+            value: DateTime.now().toIso8601String(),
+          );
+
+          if (result['status'] == 'pending') {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                  builder: (_) => PendingScreen(user: result['user'])),
+            );
+          } else {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                  builder: (_) => HomeScreen(user: result['user'])),
+            );
+          }
+        }
+      }
+    } catch (e) {
+      // 생체인증 취소 또는 실패 시 조용히 넘어가고 수동 로그인 폼 유지
+      debugPrint('생체인식 자동 로그인 스킵: $e');
+    }
+  }
+
+  /// [일반 로그인] 버튼 클릭 시 처리
   void _handleLogin() async {
     final phone = _phoneController.text.trim();
     final password = _passwordController.text.trim();
 
     if (phone.isEmpty || password.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('전화번호와 비밀번호를 모두 입력해주세요.')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('전화번호와 비밀번호를 모두 입력해주세요.')),
+      );
       return;
     }
 
@@ -36,6 +131,14 @@ class _LoginScreenState extends State<LoginScreen> {
     if (!mounted) return;
 
     if (result['success'] == true) {
+      // ★ 로그인 성공 시 3일 생체인증용 정보 안전 저장
+      await _storage.write(key: 'saved_phone', value: phone);
+      await _storage.write(key: 'saved_password', value: password);
+      await _storage.write(
+        key: 'last_login_time',
+        value: DateTime.now().toIso8601String(),
+      );
+
       if (result['status'] == 'pending') {
         Navigator.pushReplacement(
           context,

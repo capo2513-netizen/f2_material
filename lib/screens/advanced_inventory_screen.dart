@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import '../models/user_model.dart';
@@ -40,6 +41,14 @@ class _AdvancedInventoryScreenState extends State<AdvancedInventoryScreen> {
   final TextEditingController _memoController = TextEditingController();
   bool _isSubmitting = false;
 
+  // [카메라 스캐너 상태] SKT 바코드 화면과 동일한 컨트롤러 설정
+  bool _showScanner = false;
+  final MobileScannerController _scannerController = MobileScannerController(
+    detectionSpeed: DetectionSpeed.normal,
+    formats: const [BarcodeFormat.qrCode],
+  );
+  bool _isProcessingScan = false;
+
   // [증분 캐시] 스마트폰 내부 파일에서 관리되는 로컬 자재 리스트
   List<Map<String, dynamic>> _cachedMaterials = [];
   bool _isLoadingMaterials = true;
@@ -59,14 +68,14 @@ class _AdvancedInventoryScreenState extends State<AdvancedInventoryScreen> {
   @override
   void dispose() {
     _memoController.dispose();
+    _scannerController.dispose();
     super.dispose();
   }
 
-  // 1단계: 로컬 캐시 즉시 로드(0초/읽기0회) ➡️ 2단계: 변경분만 증분 동기화
+  // 1단계: 로컬 캐시 즉시 로드(0초/읽기0회) ➡️️ 2단계: 변경분만 증분 동기화
   Future<void> _initMaterialCache() async {
     setState(() => _isLoadingMaterials = true);
 
-    // 1) 기기 내부 파일에서 즉각 로드 (Firestore 읽기 0회)
     final localData = await MaterialCacheService.loadLocalMaterials();
     if (localData.isNotEmpty && mounted) {
       setState(() {
@@ -75,7 +84,6 @@ class _AdvancedInventoryScreenState extends State<AdvancedInventoryScreen> {
       });
     }
 
-    // 2) 백그라운드에서 변경된 문서만 증분 동기화 (읽기 극소량)
     try {
       final updatedList = await MaterialCacheService.syncIncrementalMaterials();
       if (mounted) {
@@ -213,34 +221,202 @@ class _AdvancedInventoryScreenState extends State<AdvancedInventoryScreen> {
     );
   }
 
-  // 2. QR 바코드 스캐너 모달 열기
-  void _openScannerModal() {
-    if (_isLoadingMaterials && _cachedMaterials.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('자재 정보를 불러오는 중입니다. 잠시만 기다려주세요.')),
-      );
-      return;
-    }
+  // ★ [핵심] 상단 카메라에서 QR 감지 시 실행되는 처리 함수 (SKT 구조 일치 & 좌표 오차 원천 해소)
+  void _onDetectQR(BarcodeCapture capture) async {
+    if (_isProcessingScan) return;
+    final rawVal = capture.barcodes.firstOrNull?.rawValue?.trim();
+    if (rawVal == null || rawVal.isEmpty) return;
 
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => _AdminScannerModal(
-        selectedWarehouse: _selectedWarehouse,
-        mode: _mode,
-        cachedMaterials: _cachedMaterials,
-        onItemScanned: (code, name, qty) {
-          _addOrUpdateItem(code, name, qty);
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('$name ($qty개) 선택 자재에 추가됨'),
-              duration: const Duration(milliseconds: 1500),
-            ),
+    setState(() => _isProcessingScan = true);
+    HapticFeedback.mediumImpact();
+
+    try {
+      String targetWarehouse = _selectedWarehouse;
+      String materialCode = rawVal;
+
+      if (rawVal.contains('|')) {
+        final parts = rawVal.split('|');
+        if (parts.length >= 2) {
+          targetWarehouse = parts[0].trim();
+          materialCode = parts[1].trim();
+        }
+      }
+
+      if (targetWarehouse != _selectedWarehouse) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('[$targetWarehouse 창고] QR이 감지되었습니다. 거점 선택을 확인하세요.'),
+            backgroundColor: const Color(0xFFA61C24),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+
+      Map<String, dynamic> target = _cachedMaterials.firstWhere(
+        (m) {
+          final wh = (m['warehouse'] ?? '').toString().trim();
+          final code = (m['materialCode'] ?? m['F2자재코드'] ?? m['docId'] ?? '')
+              .toString()
+              .trim();
+          return wh == targetWarehouse && code == materialCode;
+        },
+        orElse: () => {},
+      );
+
+      if (target.isEmpty) {
+        target = _cachedMaterials.firstWhere(
+          (m) {
+            final wh = (m['warehouse'] ?? '').toString().trim();
+            final code = (m['materialCode'] ?? m['F2자재코드'] ?? m['docId'] ?? '')
+                .toString()
+                .trim();
+            return wh == '광주' && code == materialCode;
+          },
+          orElse: () => {},
+        );
+      }
+
+      if (target.isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('등록되지 않은 자재코드입니다: $materialCode')),
+        );
+        await Future.delayed(const Duration(milliseconds: 1500));
+        setState(() => _isProcessingScan = false);
+        return;
+      }
+
+      final matName = (target['materialName'] ?? target['품명'] ?? '').toString();
+      final spec = (target['spec'] ?? target['규격'] ?? '').toString();
+
+      String displayName = matName;
+      if (spec.isNotEmpty && spec != matName) {
+        displayName = matName.isNotEmpty ? '$matName ($spec)' : spec;
+      }
+      if (displayName.isEmpty) displayName = materialCode;
+
+      if (!mounted) return;
+      final textController = TextEditingController(text: '1');
+      int tempQty = 1;
+
+      final int? selectedQty = await showDialog<int>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dlgCtx) {
+          return StatefulBuilder(
+            builder: (context, setDlgState) {
+              return AlertDialog(
+                title: Text('${_mode == 'OUT' ? '출고' : '입고'} 자재 수량 지정',
+                    style: const TextStyle(
+                        fontWeight: FontWeight.bold, fontSize: 16)),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('거점: [$targetWarehouse 창고]',
+                        style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.blueGrey)),
+                    const SizedBox(height: 6),
+                    Text(displayName,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 15)),
+                    const SizedBox(height: 2),
+                    Text('코드: $materialCode',
+                        style:
+                            TextStyle(color: Colors.grey[600], fontSize: 12)),
+                    const SizedBox(height: 16),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.remove_circle_outline,
+                              size: 32, color: Colors.red),
+                          onPressed: tempQty > 1
+                              ? () {
+                                  setDlgState(() {
+                                    tempQty--;
+                                    textController.text = tempQty.toString();
+                                  });
+                                }
+                              : null,
+                        ),
+                        SizedBox(
+                          width: 80,
+                          child: TextField(
+                            controller: textController,
+                            keyboardType: TextInputType.number,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                                fontSize: 20, fontWeight: FontWeight.bold),
+                            decoration: const InputDecoration(
+                              contentPadding: EdgeInsets.symmetric(vertical: 8),
+                              border: OutlineInputBorder(),
+                            ),
+                            onChanged: (val) {
+                              final parsed = int.tryParse(val);
+                              if (parsed != null && parsed > 0) {
+                                tempQty = parsed;
+                              }
+                            },
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.add_circle_outline,
+                              size: 32, color: Colors.blue),
+                          onPressed: () {
+                            setDlgState(() {
+                              tempQty++;
+                              textController.text = tempQty.toString();
+                            });
+                          },
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(dlgCtx, null),
+                    child: const Text('취소'),
+                  ),
+                  ElevatedButton(
+                    onPressed: () {
+                      final finalVal =
+                          int.tryParse(textController.text.trim()) ?? tempQty;
+                      Navigator.pop(dlgCtx, finalVal > 0 ? finalVal : 1);
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: _themeColor,
+                      foregroundColor: Colors.white,
+                    ),
+                    child: const Text('담기'),
+                  ),
+                ],
+              );
+            },
           );
         },
-      ),
-    );
+      );
+
+      if (selectedQty != null && selectedQty > 0) {
+        _addOrUpdateItem(materialCode, displayName, selectedQty);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('$displayName ($selectedQty개) 담기 완료'),
+              duration: const Duration(milliseconds: 1000),
+            ),
+          );
+        }
+      }
+    } finally {
+      await Future.delayed(const Duration(milliseconds: 1000));
+      if (mounted) {
+        setState(() => _isProcessingScan = false);
+      }
+    }
   }
 
   // 3. 최종 처리 전송
@@ -253,6 +429,39 @@ class _AdvancedInventoryScreenState extends State<AdvancedInventoryScreen> {
     }
 
     final memo = _memoController.text.trim();
+
+    // ★ [필수 입력 검증] 메모가 비어있으면 전송 차단
+    if (memo.isEmpty) {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 26),
+              SizedBox(width: 8),
+              Text('국소명/메모 입력 필수',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            ],
+          ),
+          content: const Text(
+            '국소명/메모가 입력되지 않았습니다.\n\n출고/반납 사유 및 작업 국소명을 반드시 입력한 후 다시 전송해 주세요.',
+            style: TextStyle(fontSize: 14),
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _themeColor,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('확인'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
     final isOut = _mode == 'OUT';
     final actionName = isOut ? '관리자 출고(차감)' : '관리자 입고(증가)';
     final logType = isOut ? '출고' : '입고';
@@ -356,7 +565,7 @@ class _AdvancedInventoryScreenState extends State<AdvancedInventoryScreen> {
         context: context,
         builder: (ctx) => AlertDialog(
           title: const Text('처리 완료',
-              style: TextStyle(fontWeight: FontWeight.bold)),
+              style: const TextStyle(fontWeight: FontWeight.bold)),
           content: Text('[$_selectedWarehouse 창고] $actionName 처리가 완료되었습니다.'),
           actions: [
             ElevatedButton(
@@ -391,6 +600,13 @@ class _AdvancedInventoryScreenState extends State<AdvancedInventoryScreen> {
         backgroundColor: const Color(0xFF1E293B),
         foregroundColor: Colors.white,
         actions: [
+          // 카메라가 켜져 있을 때 플래시 토글 버튼
+          if (_showScanner)
+            IconButton(
+              icon: const Icon(Icons.flash_on),
+              tooltip: '플래시 토글',
+              onPressed: () => _scannerController.toggleTorch(),
+            ),
           IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: '자재 목록 동기화',
@@ -412,6 +628,60 @@ class _AdvancedInventoryScreenState extends State<AdvancedInventoryScreen> {
             )
           : Column(
               children: [
+                // ★ [SKT 일치] 슬림 상단 카메라 스캐너 영역 (180px)
+                if (_showScanner)
+                  Container(
+                    color: Colors.black,
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        SizedBox(
+                          height: 180,
+                          width: double.infinity,
+                          child: MobileScanner(
+                            controller: _scannerController,
+                            onDetect: _onDetectQR,
+                          ),
+                        ),
+                        // 중앙 테두리 조준선 (좌표 오차 해소)
+                        Container(
+                          width: 280,
+                          height: 110,
+                          decoration: BoxDecoration(
+                            border: Border.all(color: _themeColor, width: 2),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                        ),
+                        // 스캐너 닫기 안내 버튼
+                        Positioned(
+                          top: 6,
+                          right: 8,
+                          child: InkWell(
+                            onTap: () => setState(() => _showScanner = false),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: Colors.black54,
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: const Row(
+                                children: [
+                                  Icon(Icons.close,
+                                      color: Colors.white, size: 14),
+                                  SizedBox(width: 4),
+                                  Text('카메라 닫기',
+                                      style: TextStyle(
+                                          color: Colors.white, fontSize: 11)),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
                 // 작업 모드 선택 (출고 vs 입고)
                 Container(
                   padding:
@@ -508,7 +778,7 @@ class _AdvancedInventoryScreenState extends State<AdvancedInventoryScreen> {
                 ),
                 const Divider(height: 1),
 
-                // 진입 버튼 영역 (목록 선택 / QR 스캔)
+                // 진입 버튼 영역 (목록 선택 / QR 스캔 토글)
                 Padding(
                   padding: const EdgeInsets.all(16),
                   child: Row(
@@ -532,13 +802,21 @@ class _AdvancedInventoryScreenState extends State<AdvancedInventoryScreen> {
                       const SizedBox(width: 12),
                       Expanded(
                         child: ElevatedButton.icon(
-                          onPressed: _openScannerModal,
-                          icon: const Icon(Icons.qr_code_scanner, size: 20),
-                          label: const Text('QR 스캔',
-                              style: TextStyle(fontWeight: FontWeight.bold)),
+                          onPressed: () {
+                            setState(() => _showScanner = !_showScanner);
+                          },
+                          icon: Icon(
+                            _showScanner ? Icons.close : Icons.qr_code_scanner,
+                            size: 20,
+                          ),
+                          label: Text(
+                            _showScanner ? '스캐너 닫기' : 'QR 스캔',
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
                           style: ElevatedButton.styleFrom(
                             padding: const EdgeInsets.symmetric(vertical: 14),
-                            backgroundColor: _themeColor,
+                            backgroundColor:
+                                _showScanner ? Colors.grey[700] : _themeColor,
                             foregroundColor: Colors.white,
                             shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(10)),
@@ -691,9 +969,7 @@ class _AdvancedInventoryScreenState extends State<AdvancedInventoryScreen> {
                         TextField(
                           controller: _memoController,
                           decoration: InputDecoration(
-                            hintText: isOut
-                                ? '출고 비고 입력 (선택사항, 예: 국소명, OOO팀 현장수령 등)'
-                                : '입고 비고 입력 (선택사항, 예: 국소 철거 반납, 신규 구매 등)',
+                            hintText: '국소명/메모 (예: 출고 반납사유 등...', // ★ 문구 통일
                             hintStyle: TextStyle(
                                 fontSize: 13, color: Colors.grey[400]),
                             contentPadding: const EdgeInsets.symmetric(
@@ -1235,273 +1511,6 @@ class _AdminCategorySelectModalState extends State<_AdminCategorySelectModal> {
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-// ------------------------------------------------------------
-// 관리자 QR 스캐너 바텀시트
-// ------------------------------------------------------------
-class _AdminScannerModal extends StatefulWidget {
-  final String selectedWarehouse;
-  final String mode;
-  final List<Map<String, dynamic>> cachedMaterials;
-  final Function(String code, String name, int qty) onItemScanned;
-
-  const _AdminScannerModal({
-    required this.selectedWarehouse,
-    required this.mode,
-    required this.cachedMaterials,
-    required this.onItemScanned,
-  });
-
-  @override
-  State<_AdminScannerModal> createState() => _AdminScannerModalState();
-}
-
-class _AdminScannerModalState extends State<_AdminScannerModal> {
-  final MobileScannerController _scannerController = MobileScannerController();
-  bool _isProcessing = false;
-
-  @override
-  void dispose() {
-    _scannerController.dispose();
-    super.dispose();
-  }
-
-  void _onDetect(BarcodeCapture capture) async {
-    if (_isProcessing) return;
-    final rawVal = capture.barcodes.firstOrNull?.rawValue?.trim();
-    if (rawVal == null || rawVal.isEmpty) return;
-
-    setState(() => _isProcessing = true);
-    _scannerController.stop();
-
-    try {
-      String targetWarehouse = widget.selectedWarehouse;
-      String materialCode = rawVal;
-
-      if (rawVal.contains('|')) {
-        final parts = rawVal.split('|');
-        if (parts.length >= 2) {
-          targetWarehouse = parts[0].trim();
-          materialCode = parts[1].trim();
-        }
-      }
-
-      Map<String, dynamic> target = widget.cachedMaterials.firstWhere(
-        (m) {
-          final wh = (m['warehouse'] ?? '').toString().trim();
-          final code = (m['materialCode'] ?? m['F2자재코드'] ?? m['docId'] ?? '')
-              .toString()
-              .trim();
-          return wh == targetWarehouse && code == materialCode;
-        },
-        orElse: () => {},
-      );
-
-      if (target.isEmpty) {
-        target = widget.cachedMaterials.firstWhere(
-          (m) {
-            final wh = (m['warehouse'] ?? '').toString().trim();
-            final code = (m['materialCode'] ?? m['F2자재코드'] ?? m['docId'] ?? '')
-                .toString()
-                .trim();
-            return wh == '광주' && code == materialCode;
-          },
-          orElse: () => {},
-        );
-      }
-
-      if (target.isEmpty) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('등록되지 않은 자재코드입니다: $materialCode')),
-        );
-        await Future.delayed(const Duration(seconds: 1));
-        _scannerController.start();
-        setState(() => _isProcessing = false);
-        return;
-      }
-
-      final matName = (target['materialName'] ?? target['품명'] ?? '').toString();
-      final spec = (target['spec'] ?? target['규격'] ?? '').toString();
-
-      String displayName = matName;
-      if (spec.isNotEmpty && spec != matName) {
-        displayName = matName.isNotEmpty ? '$matName ($spec)' : spec;
-      }
-      if (displayName.isEmpty) displayName = materialCode;
-
-      if (!mounted) return;
-      final textController = TextEditingController(text: '1');
-      int tempQty = 1;
-
-      final int? selectedQty = await showDialog<int>(
-        context: context,
-        barrierDismissible: false,
-        builder: (dlgCtx) {
-          return StatefulBuilder(
-            builder: (context, setDlgState) {
-              return AlertDialog(
-                title: Text('${widget.mode == 'OUT' ? '출고' : '입고'} 자재 수량 지정',
-                    style: const TextStyle(
-                        fontWeight: FontWeight.bold, fontSize: 16)),
-                content: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('거점: [$targetWarehouse 창고]',
-                        style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: Colors.blueGrey)),
-                    const SizedBox(height: 6),
-                    Text(displayName,
-                        style: const TextStyle(
-                            fontWeight: FontWeight.bold, fontSize: 15)),
-                    const SizedBox(height: 2),
-                    Text('코드: $materialCode',
-                        style:
-                            TextStyle(color: Colors.grey[600], fontSize: 12)),
-                    const SizedBox(height: 16),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.remove_circle_outline,
-                              size: 32, color: Colors.red),
-                          onPressed: tempQty > 1
-                              ? () {
-                                  setDlgState(() {
-                                    tempQty--;
-                                    textController.text = tempQty.toString();
-                                  });
-                                }
-                              : null,
-                        ),
-                        SizedBox(
-                          width: 80,
-                          child: TextField(
-                            controller: textController,
-                            keyboardType: TextInputType.number,
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                                fontSize: 20, fontWeight: FontWeight.bold),
-                            decoration: const InputDecoration(
-                              contentPadding: EdgeInsets.symmetric(vertical: 8),
-                              border: OutlineInputBorder(),
-                            ),
-                            onChanged: (val) {
-                              final parsed = int.tryParse(val);
-                              if (parsed != null && parsed > 0) {
-                                tempQty = parsed;
-                              }
-                            },
-                          ),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.add_circle_outline,
-                              size: 32, color: Colors.blue),
-                          onPressed: () {
-                            setDlgState(() {
-                              tempQty++;
-                              textController.text = tempQty.toString();
-                            });
-                          },
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(dlgCtx, null),
-                    child: const Text('취소'),
-                  ),
-                  ElevatedButton(
-                    onPressed: () {
-                      final finalVal =
-                          int.tryParse(textController.text.trim()) ?? tempQty;
-                      Navigator.pop(dlgCtx, finalVal > 0 ? finalVal : 1);
-                    },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: widget.mode == 'OUT'
-                          ? const Color(0xFFA61C24)
-                          : Colors.blue[800],
-                      foregroundColor: Colors.white,
-                    ),
-                    child: const Text('담기'),
-                  ),
-                ],
-              );
-            },
-          );
-        },
-      );
-
-      if (selectedQty != null && selectedQty > 0) {
-        widget.onItemScanned(materialCode, displayName, selectedQty);
-        if (mounted) {
-          Navigator.pop(context);
-        }
-      } else {
-        _scannerController.start();
-        setState(() => _isProcessing = false);
-      }
-    } catch (e) {
-      if (mounted) {
-        _scannerController.start();
-        setState(() => _isProcessing = false);
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: MediaQuery.of(context).size.height * 0.65,
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      child: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text('관리자 ${widget.mode == 'OUT' ? '출고' : '입고'} QR 스캔',
-                    style: const TextStyle(
-                        fontWeight: FontWeight.bold, fontSize: 17)),
-                IconButton(
-                  icon: const Icon(Icons.close),
-                  onPressed: () => Navigator.pop(context),
-                ),
-              ],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            child: AspectRatio(
-              aspectRatio: 1.2,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(16),
-                child: MobileScanner(
-                  controller: _scannerController,
-                  onDetect: _onDetect,
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'QR코드를 사각형 영역 중앙에 비춰주세요.\n스캔 후 수량을 입력하면 즉시 처리 목록으로 이동합니다.',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.grey[600], fontSize: 13),
-          ),
-        ],
       ),
     );
   }

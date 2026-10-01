@@ -46,6 +46,13 @@ class _SktBarcodeScanScreenState extends State<SktBarcodeScanScreen> {
     final rawVal = barcode?.rawValue?.trim();
     if (rawVal == null || rawVal.isEmpty) return;
 
+    // ★ [F2 자재 QR 필터링] "거점|코드" 구조의 F2 전용 QR코드는 감지 즉시 무시
+    if (rawVal.contains('|') ||
+        rawVal.startsWith('광주|') ||
+        rawVal.startsWith('본사|')) {
+      return;
+    }
+
     // 1. 최소 길이 체크 (통신 장비 바코드는 보통 6자리 이상)
     if (rawVal.length < 6) return;
 
@@ -138,6 +145,38 @@ class _SktBarcodeScanScreenState extends State<SktBarcodeScanScreen> {
     }
 
     final memo = _memoController.text.trim();
+
+    // ★ [필수 입력 검증] 메모가 비어있으면 전송 차단
+    if (memo.isEmpty) {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 26),
+              SizedBox(width: 8),
+              Text('국소명/메모 입력 필수',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            ],
+          ),
+          content: const Text(
+            '국소명/메모가 입력되지 않았습니다.\n\n작업 국소명 또는 처리 사유를 반드시 입력한 후 다시 전송해 주세요.',
+            style: TextStyle(fontSize: 14),
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFE65100),
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('확인'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
 
     final confirm = await showDialog<bool>(
       context: context,
@@ -292,7 +331,7 @@ class _SktBarcodeScanScreenState extends State<SktBarcodeScanScreen> {
             child: TextField(
               controller: _memoController,
               decoration: InputDecoration(
-                hintText: '국소명 / 메모 입력 (선택사항, 예: 하남감이천WRHU 철거 건)',
+                hintText: '국소명/메모 (예: 출고 반납사유 등...', // ★ 문구 통일
                 hintStyle: TextStyle(fontSize: 13, color: Colors.grey[400]),
                 contentPadding:
                     const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
