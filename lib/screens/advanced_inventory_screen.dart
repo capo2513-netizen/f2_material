@@ -242,15 +242,37 @@ class _AdvancedInventoryScreenState extends State<AdvancedInventoryScreen> {
         }
       }
 
+      // ★ [거점 자동 전환 - 옵션 A] QR 거점이 현재 화면 거점과 다를 때 자동 전환 및 장바구니 초기화 안내
       if (targetWarehouse != _selectedWarehouse) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('[$targetWarehouse 창고] QR이 감지되었습니다. 거점 선택을 확인하세요.'),
-            backgroundColor: const Color(0xFFA61C24),
-            duration: const Duration(seconds: 2),
-          ),
-        );
+        final prevWarehouse = _selectedWarehouse;
+        if (_itemList.isNotEmpty) {
+          setState(() {
+            _itemList.clear();
+            _selectedWarehouse = targetWarehouse;
+          });
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                    '거점이 [$targetWarehouse]로 변경되어 기존 $prevWarehouse 품목 목록이 초기화되었습니다.'),
+                backgroundColor: const Color(0xFFE65100),
+                duration: const Duration(seconds: 2),
+              ),
+            );
+          }
+        } else {
+          setState(() {
+            _selectedWarehouse = targetWarehouse;
+          });
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('거점이 [$targetWarehouse 창고]로 자동 전환되었습니다.'),
+                duration: const Duration(milliseconds: 1200),
+              ),
+            );
+          }
+        }
       }
 
       Map<String, dynamic> target = _cachedMaterials.firstWhere(
@@ -628,7 +650,7 @@ class _AdvancedInventoryScreenState extends State<AdvancedInventoryScreen> {
             )
           : Column(
               children: [
-                // ★ [SKT 일치] 슬림 상단 카메라 스캐너 영역 (180px)
+                // ★ [SKT 일치] 슬림 상단 카메라 스캐너 영역 (230px)
                 if (_showScanner)
                   Container(
                     color: Colors.black,
@@ -636,17 +658,23 @@ class _AdvancedInventoryScreenState extends State<AdvancedInventoryScreen> {
                       alignment: Alignment.center,
                       children: [
                         SizedBox(
-                          height: 180,
+                          height: 230,
                           width: double.infinity,
                           child: MobileScanner(
                             controller: _scannerController,
+                            scanWindow: Rect.fromCenter(
+                              center: Offset(
+                                  MediaQuery.of(context).size.width / 2, 115),
+                              width: 300,
+                              height: 150,
+                            ),
                             onDetect: _onDetectQR,
                           ),
                         ),
                         // 중앙 테두리 조준선 (좌표 오차 해소)
                         Container(
-                          width: 280,
-                          height: 110,
+                          width: 300,
+                          height: 150,
                           decoration: BoxDecoration(
                             border: Border.all(color: _themeColor, width: 2),
                             borderRadius: BorderRadius.circular(10),

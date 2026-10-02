@@ -242,15 +242,37 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
         }
       }
 
+      // ★ [거점 자동 전환 - 옵션 A] QR 거점이 현재 화면 거점과 다를 때 자동 전환 및 장바구니 초기화 안내
       if (targetWarehouse != _selectedWarehouse) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('[$targetWarehouse 창고] QR이 감지되었습니다. 거점 선택을 확인하세요.'),
-            backgroundColor: const Color(0xFFA61C24),
-            duration: const Duration(seconds: 2),
-          ),
-        );
+        final prevWarehouse = _selectedWarehouse;
+        if (_cart.isNotEmpty) {
+          setState(() {
+            _cart.clear();
+            _selectedWarehouse = targetWarehouse;
+          });
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                    '거점이 [$targetWarehouse]로 변경되어 기존 $prevWarehouse 장바구니가 초기화되었습니다.'),
+                backgroundColor: const Color(0xFFE65100),
+                duration: const Duration(seconds: 2),
+              ),
+            );
+          }
+        } else {
+          setState(() {
+            _selectedWarehouse = targetWarehouse;
+          });
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('거점이 [$targetWarehouse 창고]로 자동 전환되었습니다.'),
+                duration: const Duration(milliseconds: 1200),
+              ),
+            );
+          }
+        }
       }
 
       Map<String, dynamic> target = _cachedMaterials.firstWhere(
@@ -631,17 +653,23 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
                       alignment: Alignment.center,
                       children: [
                         SizedBox(
-                          height: 180,
+                          height: 230,
                           width: double.infinity,
                           child: MobileScanner(
                             controller: _scannerController,
+                            scanWindow: Rect.fromCenter(
+                              center: Offset(
+                                  MediaQuery.of(context).size.width / 2, 115),
+                              width: 300,
+                              height: 150,
+                            ),
                             onDetect: _onDetectQR,
                           ),
                         ),
-                        // SKT와 동일한 정중앙 주황/테마 테두리 조준선 (좌표 오차 원천 해소)
+                        // 정중앙 여유 있는 테두리 조준선
                         Container(
-                          width: 280,
-                          height: 110,
+                          width: 300, // ★ 280 -> 300
+                          height: 150, // ★ 110 -> 150 (상하 넉넉하게 확장)
                           decoration: BoxDecoration(
                             border: Border.all(color: _themeColor, width: 2),
                             borderRadius: BorderRadius.circular(10),
@@ -1071,7 +1099,7 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
 }
 
 // ------------------------------------------------------------
-// 자재 규격 목록 선택 및 실시간 검색, 관리자 문의 바텀시트
+// 자재 규격 목록 선택 및 실시간 검색, 건의 및 요청사항 바텀시트
 // ------------------------------------------------------------
 class _CategoryItemSelectModal extends StatefulWidget {
   final String selectedWarehouse;
@@ -1101,18 +1129,151 @@ class _CategoryItemSelectModalState extends State<_CategoryItemSelectModal> {
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
 
-  int _tabIndex = 0;
+  int _tabIndex = 0; // 0: 자재 선택, 1: 건의 및 요청사항
   final TextEditingController _msgController = TextEditingController();
   bool _isSendingMsg = false;
 
-  String _inquiryCategory = '건의';
-  final List<String> _inquiryCategoryList = ['건의', '추가요청', '기타'];
+  // ★ 상단 카메라 토글 및 스캐너 컨트롤러 (상단 180px 규격 통일)
+  bool _showRequestScanner = false;
+  final MobileScannerController _reqScannerController = MobileScannerController(
+    detectionSpeed: DetectionSpeed.normal,
+    formats: const [BarcodeFormat.qrCode],
+  );
+  bool _isProcessingReqScan = false;
+
+  String _inquiryCategory = '건의 및 요청사항';
+  final List<String> _inquiryCategoryList = ['건의 및 요청사항', '추가요청', '기타'];
 
   @override
   void dispose() {
     _searchController.dispose();
     _msgController.dispose();
+    _reqScannerController.dispose();
     super.dispose();
+  }
+
+  // ★ 상단 카메라에서 F2 QR 감지 시 수량 입력 팝업 후 본문에 자동 작성
+  void _onDetectReqQR(BarcodeCapture capture) async {
+    if (_isProcessingReqScan) return;
+    final rawVal = capture.barcodes.firstOrNull?.rawValue?.trim();
+    if (rawVal == null || rawVal.isEmpty) return;
+
+    setState(() => _isProcessingReqScan = true);
+    HapticFeedback.mediumImpact();
+
+    try {
+      String targetWarehouse = widget.selectedWarehouse;
+      String materialCode = rawVal;
+
+      if (rawVal.contains('|')) {
+        final parts = rawVal.split('|');
+        if (parts.length >= 2) {
+          targetWarehouse = parts[0].trim();
+          materialCode = parts[1].trim();
+        }
+      }
+
+      Map<String, dynamic> target = widget.cachedMaterials.firstWhere(
+        (m) {
+          final wh = (m['warehouse'] ?? '').toString().trim();
+          final code = (m['materialCode'] ?? m['F2자재코드'] ?? m['docId'] ?? '')
+              .toString()
+              .trim();
+          return wh == targetWarehouse && code == materialCode;
+        },
+        orElse: () => {},
+      );
+
+      if (target.isEmpty) {
+        target = widget.cachedMaterials.firstWhere(
+          (m) {
+            final wh = (m['warehouse'] ?? '').toString().trim();
+            final code = (m['materialCode'] ?? m['F2자재코드'] ?? m['docId'] ?? '')
+                .toString()
+                .trim();
+            return wh == '광주' && code == materialCode;
+          },
+          orElse: () => {},
+        );
+      }
+
+      final matName =
+          (target['materialName'] ?? target['품명'] ?? '품명미확인').toString();
+      final spec = (target['spec'] ?? target['규격'] ?? '').toString();
+
+      final textController = TextEditingController(text: '1');
+
+      if (!mounted) return;
+      final int? reqQty = await showDialog<int>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dlgCtx) => AlertDialog(
+          title: const Text('요청 수량 입력',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('품명: $matName',
+                  style: const TextStyle(fontWeight: FontWeight.bold)),
+              if (spec.isNotEmpty)
+                Text('규격: $spec',
+                    style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+              Text('코드: $materialCode',
+                  style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+              const SizedBox(height: 12),
+              TextField(
+                controller: textController,
+                keyboardType: TextInputType.number,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  labelText: '필요 요청 수량',
+                  suffixText: '개',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dlgCtx, null),
+              child: const Text('취소'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                final q = int.tryParse(textController.text.trim()) ?? 1;
+                Navigator.pop(dlgCtx, q > 0 ? q : 1);
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFA61C24),
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('입력 완료'),
+            ),
+          ],
+        ),
+      );
+
+      if (reqQty != null && reqQty > 0) {
+        final autoText =
+            '[자재 입고/주문 요청]\n- 품명: $matName\n- 규격: ${spec.isNotEmpty ? spec : '-'}\n- 자재코드: $materialCode\n- 요청수량: $reqQty개\n- 사유: ';
+        setState(() {
+          _showRequestScanner = false; // 스캔 완료 후 카메라 닫기
+          if (_msgController.text.trim().isEmpty) {
+            _msgController.text = autoText;
+          } else {
+            _msgController.text = '${_msgController.text.trim()}\n\n$autoText';
+          }
+          // 커서를 텍스트 끝(사유: 뒤)으로 자동 이동
+          _msgController.selection = TextSelection.fromPosition(
+            TextPosition(offset: _msgController.text.length),
+          );
+        });
+      }
+    } finally {
+      await Future.delayed(const Duration(milliseconds: 1000));
+      if (mounted) setState(() => _isProcessingReqScan = false);
+    }
   }
 
   Future<void> _editQuantityInList(String code, String name) async {
@@ -1171,7 +1332,7 @@ class _CategoryItemSelectModalState extends State<_CategoryItemSelectModal> {
     final text = _msgController.text.trim();
     if (text.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('문의 내용을 입력하세요.')),
+        const SnackBar(content: Text('요청 내용을 입력하세요.')),
       );
       return;
     }
@@ -1201,12 +1362,12 @@ class _CategoryItemSelectModalState extends State<_CategoryItemSelectModal> {
       setState(() {
         _isSendingMsg = false;
         _msgController.clear();
-        _inquiryCategory = '건의';
+        _inquiryCategory = '건의 및 요청사항';
         _tabIndex = 0;
       });
 
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('관리자 [요청사항] 시트로 문의가 접수되었습니다.')),
+        const SnackBar(content: Text('관리자 [요청사항] 시트로 접수되었습니다.')),
       );
     } catch (e) {
       if (!mounted) return;
@@ -1280,7 +1441,7 @@ class _CategoryItemSelectModalState extends State<_CategoryItemSelectModal> {
     }).toList();
 
     return Container(
-      height: MediaQuery.of(context).size.height * 0.88,
+      height: MediaQuery.of(context).size.height * 0.9,
       decoration: const BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
@@ -1359,7 +1520,7 @@ class _CategoryItemSelectModalState extends State<_CategoryItemSelectModal> {
                                     : Colors.black87),
                             const SizedBox(width: 4),
                             Text(
-                              '관리자 문의/요청',
+                              '건의 및 요청사항',
                               style: TextStyle(
                                 color: _tabIndex == 1
                                     ? Colors.white
@@ -1655,11 +1816,75 @@ class _CategoryItemSelectModalState extends State<_CategoryItemSelectModal> {
                       ),
               ),
             ] else ...[
+              // ★ [건의 및 요청사항 탭]
               Expanded(
                 child: SingleChildScrollView(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      // ★ [상단 슬림 스캐너 180px 통일] 버튼 클릭 시 위에 펼쳐짐
+                      if (_showRequestScanner)
+                        Container(
+                          margin: const EdgeInsets.only(bottom: 12),
+                          color: Colors.black,
+                          child: Stack(
+                            alignment: Alignment.center,
+                            children: [
+                              SizedBox(
+                                height: 230,
+                                width: double.infinity,
+                                child: MobileScanner(
+                                  controller: _reqScannerController,
+                                  scanWindow: Rect.fromCenter(
+                                    center: Offset(
+                                        MediaQuery.of(context).size.width / 2,
+                                        115),
+                                    width: 300,
+                                    height: 150,
+                                  ),
+                                  onDetect: _onDetectReqQR,
+                                ),
+                              ),
+                              Container(
+                                width: 300, // ★ 280 -> 300
+                                height: 150, // ★ 110 -> 150
+                                decoration: BoxDecoration(
+                                  border: Border.all(
+                                      color: const Color(0xFFA61C24), width: 2),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                              ),
+                              Positioned(
+                                top: 6,
+                                right: 8,
+                                child: InkWell(
+                                  onTap: () => setState(
+                                      () => _showRequestScanner = false),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 8, vertical: 4),
+                                    decoration: BoxDecoration(
+                                      color: Colors.black54,
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: const Row(
+                                      children: [
+                                        Icon(Icons.close,
+                                            color: Colors.white, size: 14),
+                                        SizedBox(width: 4),
+                                        Text('카메라 닫기',
+                                            style: TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 11)),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+
                       Container(
                         padding: const EdgeInsets.all(12),
                         decoration: BoxDecoration(
@@ -1673,7 +1898,7 @@ class _CategoryItemSelectModalState extends State<_CategoryItemSelectModal> {
                             const SizedBox(width: 8),
                             Expanded(
                               child: Text(
-                                '작성하신 문의 및 요청사항은 엑셀 [요청사항] 시트로 자동 연동되어 관리자에게 실시간 알림이 전송됩니다.',
+                                '작성하신 내용은 엑셀 [요청사항] 시트로 자동 연동되어 관리자에게 실시간 알림이 전송됩니다.',
                                 style: TextStyle(
                                     fontSize: 12, color: Colors.grey[800]),
                               ),
@@ -1681,7 +1906,46 @@ class _CategoryItemSelectModalState extends State<_CategoryItemSelectModal> {
                           ],
                         ),
                       ),
+                      const SizedBox(height: 10),
+
+                      // ★ QR 스캔 토글 버튼 (상단 카메라 열기/닫기)
+                      SizedBox(
+                        width: double.infinity,
+                        height: 44,
+                        child: OutlinedButton.icon(
+                          onPressed: () {
+                            setState(() {
+                              _showRequestScanner = !_showRequestScanner;
+                            });
+                          },
+                          icon: Icon(
+                            _showRequestScanner
+                                ? Icons.close
+                                : Icons.qr_code_scanner,
+                            color: const Color(0xFFA61C24),
+                          ),
+                          label: Text(
+                            _showRequestScanner
+                                ? '스캐너 닫기'
+                                : '필요자재 F2 QR코드 스캔하여 요청내용 자동입력',
+                            style: const TextStyle(
+                              color: Color(0xFFA61C24),
+                              fontWeight: FontWeight.bold,
+                              fontSize: 13,
+                            ),
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            side: const BorderSide(
+                                color: Color(0xFFA61C24), width: 1.5),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            backgroundColor: const Color(0xFFFFF5F5),
+                          ),
+                        ),
+                      ),
                       const SizedBox(height: 12),
+
                       const Text(
                         '문의 분류',
                         style: TextStyle(
@@ -1713,23 +1977,29 @@ class _CategoryItemSelectModalState extends State<_CategoryItemSelectModal> {
                       ),
                       const SizedBox(height: 12),
                       const Text(
-                        '문의/요청 내용',
+                        '문의 / 요청 내용',
                         style: TextStyle(
                             fontWeight: FontWeight.bold, fontSize: 14),
                       ),
                       const SizedBox(height: 6),
+
+                      // ★ [핵심] 사유 및 모든 내용이 잘리지 않고 무제한 확장되는 입력창
                       TextField(
                         controller: _msgController,
-                        maxLines: 5,
+                        minLines: 5,
+                        maxLines: null, // 줄 수 제한 해제 (자동 확장)
+                        keyboardType: TextInputType.multiline,
                         decoration: InputDecoration(
                           hintText:
-                              '예: 본사 창고에 RF케이블 2M 수량이 부족합니다. 추가 입고 부탁드립니다.\n(자재코드, 수량, 현장 필요 사유 등)',
+                              '내용을 직접 입력하거나, 위의 [F2 QR코드 스캔] 버튼을 누르면 규격과 품명이 자동 입력됩니다.',
                           hintStyle:
                               TextStyle(color: Colors.grey[400], fontSize: 13),
+                          contentPadding: const EdgeInsets.all(12),
                           border: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(8)),
                         ),
                       ),
+                      const SizedBox(height: 20),
                     ],
                   ),
                 ),
@@ -1754,7 +2024,7 @@ class _CategoryItemSelectModalState extends State<_CategoryItemSelectModal> {
                                 ),
                               )
                             : const Text(
-                                '관리자에게 문의사항 전송',
+                                '관리자에게 건의 및 요청사항 전송',
                                 style: TextStyle(
                                   fontWeight: FontWeight.bold,
                                   fontSize: 15,

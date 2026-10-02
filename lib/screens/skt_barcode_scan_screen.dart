@@ -304,16 +304,22 @@ class _SktBarcodeScanScreenState extends State<SktBarcodeScanScreen> {
               alignment: Alignment.center,
               children: [
                 SizedBox(
-                  height: 180,
+                  height: 230,
                   width: double.infinity,
                   child: MobileScanner(
                     controller: _scannerController,
+                    scanWindow: Rect.fromCenter(
+                      center:
+                          Offset(MediaQuery.of(context).size.width / 2, 115),
+                      width: 300,
+                      height: 150,
+                    ),
                     onDetect: _onDetect,
                   ),
                 ),
                 Container(
-                  width: 280,
-                  height: 110,
+                  width: 300,
+                  height: 150,
                   decoration: BoxDecoration(
                     border:
                         Border.all(color: const Color(0xFFE65100), width: 2),
