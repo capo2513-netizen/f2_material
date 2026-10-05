@@ -6,6 +6,7 @@ import 'package:dio/dio.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class UpdateService {
   /// 버전 체크 및 업데이트 다이얼로그 호출
@@ -86,6 +87,12 @@ class _UpdateProgressDialogState extends State<_UpdateProgressDialog>
   String? _downloadedApkPath;
   bool _isWaitingInstall = false;
 
+  // 스토어 URL인지 일반 APK 다운로드 URL인지 판별
+  bool get _isStoreUrl {
+    final url = widget.apkUrl.trim().toLowerCase();
+    return url.contains('play.google.com') || url.startsWith('market://');
+  }
+
   @override
   void initState() {
     super.initState();
@@ -108,20 +115,42 @@ class _UpdateProgressDialogState extends State<_UpdateProgressDialog>
     }
   }
 
+  /// 구글 플레이스토어로 이동하는 함수
+  Future<void> _launchStore() async {
+    try {
+      final uri = Uri.parse(widget.apkUrl.trim());
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } else {
+        // 대체 market 스킴 시도
+        final fallbackUri =
+            Uri.parse('market://details?id=com.f2telecom.f2_material');
+        await launchUrl(fallbackUri, mode: LaunchMode.externalApplication);
+      }
+    } catch (e) {
+      setState(() {
+        _statusText = '스토어 이동 실패: 구글 플레이스토어 앱을 확인해 주세요.';
+      });
+    }
+  }
+
   /// APK 저장 가능한 최적의 외부 공개 경로 탐색
   Future<String> _getApkSavePath() async {
     Directory? targetDir;
     if (Platform.isAndroid) {
-      // 1순위: 외부 저장소 다운로드 경로 또는 앱 외부 디렉토리
       targetDir = await getExternalStorageDirectory();
     }
-    // 대체: 일반 임시 경로
     targetDir ??= await getTemporaryDirectory();
     return '${targetDir.path}/F2자재_update.apk';
   }
 
-  /// 다운로드 및 설치 실행 함수
+  /// 다운로드 및 설치 실행 함수 (스토어 URL이면 스토어 실행, APK URL이면 기존 다운로드 실행)
   Future<void> _startDownloadAndInstall() async {
+    if (_isStoreUrl) {
+      await _launchStore();
+      return;
+    }
+
     final savePath = await _getApkSavePath();
 
     // 1. 이미 받아둔 파일이 온전히 존재하는 경우 재다운로드 없이 바로 설치 창 호출
@@ -201,7 +230,6 @@ class _UpdateProgressDialogState extends State<_UpdateProgressDialog>
       return;
     }
 
-    // MIME 타입을 명시적으로 지정하여 설치 프로그램 호출
     final result = await OpenFilex.open(
       path,
       type: "application/vnd.android.package-archive",
@@ -266,27 +294,29 @@ class _UpdateProgressDialogState extends State<_UpdateProgressDialog>
             ),
           ),
           const SizedBox(height: 8),
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: const Color(0xFFFFFBEB),
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: const Color(0xFFFDE68A)),
-            ),
-            child: const Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Icon(Icons.security, size: 16, color: Color(0xFFD97706)),
-                SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    '갤럭시 기기는 [설정 > 보안 및 개인정보 보호 > 보안 위험 자동 차단]을 "사용 안함"으로 해제해야 설치됩니다.',
-                    style: TextStyle(fontSize: 11, color: Color(0xFF92400E)),
+          // 스토어 URL일 때는 번거로운 갤럭시 보안 차단 해제 안내 박스를 숨김 (스토어 설치는 보안 차단에 안 걸림)
+          if (!_isStoreUrl)
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFFBEB),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: const Color(0xFFFDE68A)),
+              ),
+              child: const Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.security, size: 16, color: Color(0xFFD97706)),
+                  SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      '갤럭시 기기는 [설정 > 보안 및 개인정보 보호 > 보안 위험 자동 차단]을 "사용 안함"으로 해제해야 설치됩니다.',
+                      style: TextStyle(fontSize: 11, color: Color(0xFF92400E)),
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
           if (_isDownloading) ...[
             const SizedBox(height: 16),
             LinearProgressIndicator(
@@ -338,7 +368,7 @@ class _UpdateProgressDialogState extends State<_UpdateProgressDialog>
                   ? '다운로드 진행 중...'
                   : (_downloadedApkPath != null
                       ? '보안 설정 완료 후 설치 계속하기'
-                      : '지금 바로 업데이트'),
+                      : (_isStoreUrl ? '스토어에서 업데이트' : '지금 바로 업데이트')),
               style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
             ),
           ),
