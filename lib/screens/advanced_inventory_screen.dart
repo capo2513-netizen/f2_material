@@ -48,6 +48,14 @@ class _AdvancedInventoryScreenState extends State<AdvancedInventoryScreen> {
     formats: const [BarcodeFormat.qrCode],
   );
   bool _isProcessingScan = false;
+  double _zoomScale = 0.0; // 0.0: 기본(1x), 0.5: 2배 줌
+
+  void _toggleZoom() {
+    setState(() {
+      _zoomScale = (_zoomScale == 0.0) ? 0.5 : 0.0;
+    });
+    _scannerController.setZoomScale(_zoomScale);
+  }
 
   // [증분 캐시] 스마트폰 내부 파일에서 관리되는 로컬 자재 리스트
   List<Map<String, dynamic>> _cachedMaterials = [];
@@ -680,30 +688,77 @@ class _AdvancedInventoryScreenState extends State<AdvancedInventoryScreen> {
                             borderRadius: BorderRadius.circular(10),
                           ),
                         ),
-                        // 스캐너 닫기 안내 버튼
+                        // ★ [추가] 우측 상단 줌 토글 & 닫기 버튼 묶음
                         Positioned(
                           top: 6,
                           right: 8,
-                          child: InkWell(
-                            onTap: () => setState(() => _showScanner = false),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 8, vertical: 4),
-                              decoration: BoxDecoration(
-                                color: Colors.black54,
-                                borderRadius: BorderRadius.circular(6),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              // [1x / 2x 줌 원클릭 버튼]
+                              InkWell(
+                                onTap: _toggleZoom,
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 9, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: _zoomScale > 0.0
+                                        ? const Color(
+                                            0xFFF39800) // 2x 활성화 시 주황색 강조
+                                        : Colors.black54,
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(
+                                      color: _zoomScale > 0.0
+                                          ? Colors.white
+                                          : Colors.white30,
+                                      width: 1,
+                                    ),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      const Icon(Icons.zoom_in,
+                                          color: Colors.white, size: 14),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        _zoomScale > 0.0 ? '2x' : '1x',
+                                        style: const TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 11),
+                                      ),
+                                    ],
+                                  ),
+                                ),
                               ),
-                              child: const Row(
-                                children: [
-                                  Icon(Icons.close,
-                                      color: Colors.white, size: 14),
-                                  SizedBox(width: 4),
-                                  Text('카메라 닫기',
-                                      style: TextStyle(
-                                          color: Colors.white, fontSize: 11)),
-                                ],
+                              const SizedBox(width: 6),
+                              // [기존 카메라 닫기 버튼]
+                              InkWell(
+                                onTap: () {
+                                  if (_zoomScale > 0.0)
+                                    _toggleZoom(); // 닫을 때 1배율 리셋
+                                  setState(() => _showScanner = false);
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 8, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: Colors.black54,
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                  child: const Row(
+                                    children: [
+                                      Icon(Icons.close,
+                                          color: Colors.white, size: 14),
+                                      SizedBox(width: 4),
+                                      Text('카메라 닫기',
+                                          style: TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 11)),
+                                    ],
+                                  ),
+                                ),
                               ),
-                            ),
+                            ],
                           ),
                         ),
                       ],

@@ -30,6 +30,14 @@ class _SktBarcodeScanScreenState extends State<SktBarcodeScanScreen> {
 
   bool _isSubmitting = false;
   DateTime? _lastScanTime;
+  double _zoomScale = 0.0; // 0.0: 1배율(기본), 0.5: 2배 줌
+
+  void _toggleZoom() {
+    setState(() {
+      _zoomScale = (_zoomScale == 0.0) ? 0.5 : 0.0;
+    });
+    _scannerController.setZoomScale(_zoomScale);
+  }
 
   @override
   void dispose() {
@@ -324,6 +332,44 @@ class _SktBarcodeScanScreenState extends State<SktBarcodeScanScreen> {
                     border:
                         Border.all(color: const Color(0xFFE65100), width: 2),
                     borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+                // ★ [추가] 우측 상단 1x / 2x 줌 원클릭 토글 버튼
+                Positioned(
+                  top: 6,
+                  right: 8,
+                  child: InkWell(
+                    onTap: _toggleZoom,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 9, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: _zoomScale > 0.0
+                            ? const Color(0xFFE65100) // 2x 활성화 시 SKT 주황색 강조
+                            : Colors.black54,
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(
+                          color:
+                              _zoomScale > 0.0 ? Colors.white : Colors.white30,
+                          width: 1,
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.zoom_in,
+                              color: Colors.white, size: 14),
+                          const SizedBox(width: 4),
+                          Text(
+                            _zoomScale > 0.0 ? '2x' : '1x',
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 11),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               ],
