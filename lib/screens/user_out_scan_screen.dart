@@ -46,11 +46,11 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
     formats: const [BarcodeFormat.qrCode],
   );
   bool _isProcessingScan = false;
-  double _zoomScale = 0.0; // 0.0: 1배율 기본, 0.5: 2배 줌
+  double _zoomScale = 0.0; // 0.0: 1x(기본), 0.45: 2x, 0.8: 3x(초소형 QR 전용)
 
-  void _toggleZoom() {
+  void _setZoom(double scale) {
     setState(() {
-      _zoomScale = (_zoomScale == 0.0) ? 0.5 : 0.0;
+      _zoomScale = scale;
     });
     _scannerController.setZoomScale(_zoomScale);
   }
@@ -147,6 +147,30 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
         ));
       }
     });
+  }
+
+  // ★ 줌 세그먼트 칩 위젯 빌더
+  Widget _buildZoomChip(
+      String label, double scale, bool isSelected, VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(4),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFFF39800) : Colors.transparent,
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: isSelected ? Colors.white : Colors.white70,
+            fontSize: 11,
+            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+          ),
+        ),
+      ),
+    );
   }
 
   // 숫자 터치 시 직접 수량 입력 다이얼로그
@@ -683,54 +707,44 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
                             borderRadius: BorderRadius.circular(10),
                           ),
                         ),
-                        // ★ [추가] 우측 상단 줌 토글 & 닫기 버튼 묶음
+                        // ★ [개선] 우측 상단 [ 1x | 2x | 3x ] 세그먼트 줌 & 닫기 버튼 묶음
                         Positioned(
                           top: 6,
                           right: 8,
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              // [1x / 2x 줌 원클릭 버튼]
-                              InkWell(
-                                onTap: _toggleZoom,
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 9, vertical: 4),
-                                  decoration: BoxDecoration(
-                                    color: _zoomScale > 0.0
-                                        ? const Color(
-                                            0xFFF39800) // 2x 활성화 시 주황색 강조
-                                        : Colors.black54,
-                                    borderRadius: BorderRadius.circular(6),
-                                    border: Border.all(
-                                      color: _zoomScale > 0.0
-                                          ? Colors.white
-                                          : Colors.white30,
-                                      width: 1,
-                                    ),
-                                  ),
-                                  child: Row(
-                                    children: [
-                                      const Icon(Icons.zoom_in,
-                                          color: Colors.white, size: 14),
-                                      const SizedBox(width: 4),
-                                      Text(
-                                        _zoomScale > 0.0 ? '2x' : '1x',
-                                        style: const TextStyle(
-                                            color: Colors.white,
-                                            fontWeight: FontWeight.bold,
-                                            fontSize: 11),
-                                      ),
-                                    ],
-                                  ),
+                              // [ 1x | 2x | 3x 세그먼트 버튼 ]
+                              Container(
+                                padding: const EdgeInsets.all(2),
+                                decoration: BoxDecoration(
+                                  color: Colors.black54,
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(
+                                      color: Colors.white24, width: 0.8),
+                                ),
+                                child: Row(
+                                  children: [
+                                    _buildZoomChip('1x', 0.0, _zoomScale == 0.0,
+                                        () => _setZoom(0.0)),
+                                    const SizedBox(width: 2),
+                                    _buildZoomChip(
+                                        '2x',
+                                        0.45,
+                                        (_zoomScale > 0.0 && _zoomScale < 0.7),
+                                        () => _setZoom(0.45)),
+                                    const SizedBox(width: 2),
+                                    _buildZoomChip('3x', 0.8, _zoomScale >= 0.7,
+                                        () => _setZoom(0.8)),
+                                  ],
                                 ),
                               ),
                               const SizedBox(width: 6),
-                              // [기존 카메라 닫기 버튼 100% 동일 유지]
+                              // [카메라 닫기 버튼]
                               InkWell(
                                 onTap: () {
                                   if (_zoomScale > 0.0)
-                                    _toggleZoom(); // 닫을 때 1배율 리셋
+                                    _setZoom(0.0); // 닫을 때 1x 리셋
                                   setState(() => _showScanner = false);
                                 },
                                 child: Container(
@@ -1195,11 +1209,11 @@ class _CategoryItemSelectModalState extends State<_CategoryItemSelectModal> {
     formats: const [BarcodeFormat.qrCode],
   );
   bool _isProcessingReqScan = false;
-  double _reqZoomScale = 0.0; // 0.0: 기본(1x), 0.5: 2배 줌
+  double _reqZoomScale = 0.0; // 0.0: 1x, 0.45: 2x, 0.8: 3x
 
-  void _toggleReqZoom() {
+  void _setReqZoom(double scale) {
     setState(() {
-      _reqZoomScale = (_reqZoomScale == 0.0) ? 0.5 : 0.0;
+      _reqZoomScale = scale;
     });
     _reqScannerController.setZoomScale(_reqZoomScale);
   }
@@ -1213,6 +1227,29 @@ class _CategoryItemSelectModalState extends State<_CategoryItemSelectModal> {
     _msgController.dispose();
     _reqScannerController.dispose();
     super.dispose();
+  }
+
+  Widget _buildReqZoomChip(
+      String label, double scale, bool isSelected, VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(4),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFFF39800) : Colors.transparent,
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: isSelected ? Colors.white : Colors.white70,
+            fontSize: 11,
+            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+          ),
+        ),
+      ),
+    );
   }
 
   // ★ 상단 카메라에서 F2 QR 감지 시 수량 입력 팝업 후 본문에 자동 작성
@@ -1917,52 +1954,49 @@ class _CategoryItemSelectModalState extends State<_CategoryItemSelectModal> {
                                   borderRadius: BorderRadius.circular(10),
                                 ),
                               ),
-                              // ★ 요청사항 상단 줌 토글 & 닫기 버튼 묶음
+                              // ★ 요청사항 상단 [ 1x | 2x | 3x ] 줌 & 닫기 버튼 묶음
                               Positioned(
                                 top: 6,
                                 right: 8,
                                 child: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    InkWell(
-                                      onTap: _toggleReqZoom,
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(
-                                            horizontal: 9, vertical: 4),
-                                        decoration: BoxDecoration(
-                                          color: _reqZoomScale > 0.0
-                                              ? const Color(0xFFF39800)
-                                              : Colors.black54,
-                                          borderRadius:
-                                              BorderRadius.circular(6),
-                                          border: Border.all(
-                                            color: _reqZoomScale > 0.0
-                                                ? Colors.white
-                                                : Colors.white30,
-                                            width: 1,
-                                          ),
-                                        ),
-                                        child: Row(
-                                          children: [
-                                            const Icon(Icons.zoom_in,
-                                                color: Colors.white, size: 14),
-                                            const SizedBox(width: 4),
-                                            Text(
-                                              _reqZoomScale > 0.0 ? '2x' : '1x',
-                                              style: const TextStyle(
-                                                  color: Colors.white,
-                                                  fontWeight: FontWeight.bold,
-                                                  fontSize: 11),
-                                            ),
-                                          ],
-                                        ),
+                                    Container(
+                                      padding: const EdgeInsets.all(2),
+                                      decoration: BoxDecoration(
+                                        color: Colors.black54,
+                                        borderRadius: BorderRadius.circular(6),
+                                        border: Border.all(
+                                            color: Colors.white24, width: 0.8),
+                                      ),
+                                      child: Row(
+                                        children: [
+                                          _buildReqZoomChip(
+                                              '1x',
+                                              0.0,
+                                              _reqZoomScale == 0.0,
+                                              () => _setReqZoom(0.0)),
+                                          const SizedBox(width: 2),
+                                          _buildReqZoomChip(
+                                              '2x',
+                                              0.45,
+                                              (_reqZoomScale > 0.0 &&
+                                                  _reqZoomScale < 0.7),
+                                              () => _setReqZoom(0.45)),
+                                          const SizedBox(width: 2),
+                                          _buildReqZoomChip(
+                                              '3x',
+                                              0.8,
+                                              _reqZoomScale >= 0.7,
+                                              () => _setReqZoom(0.8)),
+                                        ],
                                       ),
                                     ),
                                     const SizedBox(width: 6),
                                     InkWell(
                                       onTap: () {
                                         if (_reqZoomScale > 0.0)
-                                          _toggleReqZoom();
+                                          _setReqZoom(0.0);
                                         setState(
                                             () => _showRequestScanner = false);
                                       },

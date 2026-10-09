@@ -30,13 +30,39 @@ class _SktBarcodeScanScreenState extends State<SktBarcodeScanScreen> {
 
   bool _isSubmitting = false;
   DateTime? _lastScanTime;
-  double _zoomScale = 0.0; // 0.0: 1배율(기본), 0.5: 2배 줌
+  double _zoomScale = 0.0; // 0.0: 1x(기본), 0.45: 2x, 0.8: 3x(초소형 바코드 전용)
 
-  void _toggleZoom() {
+  void _setZoom(double scale) {
     setState(() {
-      _zoomScale = (_zoomScale == 0.0) ? 0.5 : 0.0;
+      _zoomScale = scale;
     });
     _scannerController.setZoomScale(_zoomScale);
+  }
+
+  // ★ SKT 주황 테마에 맞춘 세그먼트 칩 위젯
+  Widget _buildZoomChip(
+      String label, double scale, bool isSelected, VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(4),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? const Color(0xFFE65100)
+              : Colors.transparent, // SKT 주황 포인트
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: isSelected ? Colors.white : Colors.white70,
+            fontSize: 11,
+            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -334,41 +360,32 @@ class _SktBarcodeScanScreenState extends State<SktBarcodeScanScreen> {
                     borderRadius: BorderRadius.circular(10),
                   ),
                 ),
-                // ★ [추가] 우측 상단 1x / 2x 줌 원클릭 토글 버튼
+                // ★ [개선] 우측 상단 [ 1x | 2x | 3x ] 세그먼트 줌 버튼 그룹
                 Positioned(
                   top: 6,
                   right: 8,
-                  child: InkWell(
-                    onTap: _toggleZoom,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 9, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: _zoomScale > 0.0
-                            ? const Color(0xFFE65100) // 2x 활성화 시 SKT 주황색 강조
-                            : Colors.black54,
-                        borderRadius: BorderRadius.circular(6),
-                        border: Border.all(
-                          color:
-                              _zoomScale > 0.0 ? Colors.white : Colors.white30,
-                          width: 1,
-                        ),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(Icons.zoom_in,
-                              color: Colors.white, size: 14),
-                          const SizedBox(width: 4),
-                          Text(
-                            _zoomScale > 0.0 ? '2x' : '1x',
-                            style: const TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 11),
-                          ),
-                        ],
-                      ),
+                  child: Container(
+                    padding: const EdgeInsets.all(2),
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: Colors.white24, width: 0.8),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _buildZoomChip(
+                            '1x', 0.0, _zoomScale == 0.0, () => _setZoom(0.0)),
+                        const SizedBox(width: 2),
+                        _buildZoomChip(
+                            '2x',
+                            0.45,
+                            (_zoomScale > 0.0 && _zoomScale < 0.7),
+                            () => _setZoom(0.45)),
+                        const SizedBox(width: 2),
+                        _buildZoomChip(
+                            '3x', 0.8, _zoomScale >= 0.7, () => _setZoom(0.8)),
+                      ],
                     ),
                   ),
                 ),
