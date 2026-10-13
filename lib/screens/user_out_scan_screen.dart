@@ -1770,6 +1770,7 @@ class _CategoryItemSelectModalState extends State<_CategoryItemSelectModal> {
                                     crossAxisAlignment:
                                         CrossAxisAlignment.start,
                                     children: [
+                                      // 1행: 품명 + 현재고 뱃지
                                       Row(
                                         children: [
                                           Flexible(
@@ -1812,31 +1813,27 @@ class _CategoryItemSelectModalState extends State<_CategoryItemSelectModal> {
                                           ),
                                         ],
                                       ),
-                                      const SizedBox(height: 3),
-                                      Row(
-                                        children: [
-                                          if (spec.isNotEmpty) ...[
-                                            Flexible(
-                                              child: Text(
-                                                spec,
-                                                style: const TextStyle(
-                                                  fontSize: 12,
-                                                  color: Colors.black87,
-                                                  fontWeight: FontWeight.w500,
-                                                ),
-                                                overflow: TextOverflow.ellipsis,
-                                              ),
-                                            ),
-                                            const SizedBox(width: 8),
-                                          ],
-                                          Text(
-                                            '코드: $code',
-                                            style: TextStyle(
-                                              fontSize: 11,
-                                              color: Colors.grey[600],
-                                            ),
+                                      // 2행: 규격 풀네이밍 (생략 없이 자연스럽게 자동 줄바꿈)
+                                      if (spec.isNotEmpty) ...[
+                                        const SizedBox(height: 3),
+                                        Text(
+                                          spec,
+                                          style: const TextStyle(
+                                            fontSize: 12,
+                                            color: Colors.black87,
+                                            fontWeight: FontWeight.w500,
+                                            height: 1.25,
                                           ),
-                                        ],
+                                        ),
+                                      ],
+                                      // 3행: 자재코드 단독 표시
+                                      const SizedBox(height: 3),
+                                      Text(
+                                        '코드: $code',
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          color: Colors.grey[600],
+                                        ),
                                       ),
                                     ],
                                   ),
