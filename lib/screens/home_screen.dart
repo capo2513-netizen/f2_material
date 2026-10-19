@@ -283,9 +283,58 @@ class _HomeScreenState extends State<HomeScreen> {
                       Navigator.pop(ctx);
 
                       if (error == null) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                              content: Text('이메일 주소가 성공적으로 변경되었습니다.')),
+                        // 성공 시 확인 팝업을 띄워 메일 인증 링크 클릭을 명확히 안내
+                        showDialog(
+                          context: context,
+                          barrierDismissible: false,
+                          builder: (successCtx) => AlertDialog(
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            title: const Row(
+                              children: [
+                                Icon(Icons.mark_email_read_outlined,
+                                    color: Color(0xFFA61C24)),
+                                SizedBox(width: 8),
+                                Text(
+                                  '인증 메일 발송 완료',
+                                  style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 17),
+                                ),
+                              ],
+                            ),
+                            content: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '입력하신 [$newEmail] 주소로\n인증 메일이 발송되었습니다.',
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.bold),
+                                ),
+                                const SizedBox(height: 12),
+                                const Text(
+                                  '보안을 위해 해당 메일함에서 [인증 링크]를 클릭하셔야 계정 이메일 변경이 최종 완료됩니다.\n\n링크 확인 전까지는 이전 정보가 유지될 수 있습니다.',
+                                  style: TextStyle(
+                                      fontSize: 13, color: Colors.black87),
+                                ),
+                              ],
+                            ),
+                            actions: [
+                              ElevatedButton(
+                                onPressed: () => Navigator.pop(successCtx),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFFA61C24),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                ),
+                                child: const Text('확인',
+                                    style: TextStyle(color: Colors.white)),
+                              ),
+                            ],
+                          ),
                         );
                       } else {
                         ScaffoldMessenger.of(context).showSnackBar(

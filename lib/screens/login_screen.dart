@@ -242,16 +242,18 @@ class _LoginScreenState extends State<LoginScreen> {
                       setDialogState(() => isSending = false);
                       if (!mounted) return;
 
-                      Navigator.pop(ctx);
+                      Navigator.pop(ctx); // 입력 팝업 닫기
                       showDialog(
                         context: context,
-                        builder: (_) => AlertDialog(
+                        builder: (resultCtx) => AlertDialog(
+                          // ★ resultCtx 사용
                           title: const Text('비밀번호 재설정 안내',
                               style: TextStyle(fontWeight: FontWeight.bold)),
                           content: Text(resultMsg),
                           actions: [
                             TextButton(
-                              onPressed: () => Navigator.pop(context),
+                              onPressed: () =>
+                                  Navigator.pop(resultCtx), // ★ resultCtx 닫기
                               child: const Text('확인'),
                             ),
                           ],

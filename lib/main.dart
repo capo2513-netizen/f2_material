@@ -107,9 +107,8 @@ class _AuthGateState extends State<AuthGate> {
       }
 
       // [보안] 휴면(21일) 또는 거절된 계정 체크
-      final daysInactive = DateTime.now()
-          .difference(userModel.lastActiveAt)
-          .inDays;
+      final daysInactive =
+          DateTime.now().difference(userModel.lastActiveAt).inDays;
       if (daysInactive >= 21 ||
           userModel.status == 'dormant' ||
           userModel.status == 'rejected') {
@@ -129,8 +128,8 @@ class _AuthGateState extends State<AuthGate> {
         FirebaseFirestore.instance
             .collection('users')
             .doc(user.uid)
-            .update({'lastActiveAt': FieldValue.serverTimestamp()})
-            .catchError((_) => null),
+            .update({'lastActiveAt': FieldValue.serverTimestamp()}).catchError(
+                (_) => null),
       ); // 에러 발생해도 무시 (다음 접속 때 갱신됨)
 
       // 로컬 세션 시작일자 갱신 (기다리지 않음)

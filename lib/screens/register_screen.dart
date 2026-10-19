@@ -11,21 +11,46 @@ class RegisterScreen extends StatefulWidget {
 class _RegisterScreenState extends State<RegisterScreen> {
   final _nameController = TextEditingController();
   final _phoneController = TextEditingController();
+  final _emailController = TextEditingController(); // ★ 추가
   final _teamController = TextEditingController();
   final _passwordController = TextEditingController();
   final _authService = AuthService();
   bool _isLoading = false;
 
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _phoneController.dispose();
+    _emailController.dispose();
+    _teamController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
   void _handleRegister() async {
     final name = _nameController.text.trim();
     final phone = _phoneController.text.trim();
+    final email = _emailController.text.trim(); // ★ 추가
     final team = _teamController.text.trim();
     final password = _passwordController.text.trim();
 
-    if (name.isEmpty || phone.isEmpty || team.isEmpty || password.isEmpty) {
+    // 이메일 포함 빈칸 검증
+    if (name.isEmpty ||
+        phone.isEmpty ||
+        email.isEmpty ||
+        team.isEmpty ||
+        password.isEmpty) {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('모든 항목을 입력해주세요.')));
+      return;
+    }
+
+    // ★ 이메일 형식(@ 포함 여부) 간단 검증
+    if (!email.contains('@') || !email.contains('.')) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('올바른 이메일 주소를 입력해주세요.')));
       return;
     }
 
@@ -40,6 +65,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     final error = await _authService.register(
       name: name,
       phone: phone,
+      email: email, // ★ auth_service로 실제 이메일 전달
       team: team,
       password: password,
     );
@@ -124,6 +150,20 @@ class _RegisterScreenState extends State<RegisterScreen> {
               decoration: InputDecoration(
                 labelText: '전화번호',
                 hintText: '01012345678 (- 없이 입력)',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // ★ [추가] 이메일 입력창
+            TextField(
+              controller: _emailController,
+              keyboardType: TextInputType.emailAddress,
+              decoration: InputDecoration(
+                labelText: '이메일 주소',
+                hintText: 'example@gmail.com (비밀번호 분실 시 필수)',
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(10),
                 ),

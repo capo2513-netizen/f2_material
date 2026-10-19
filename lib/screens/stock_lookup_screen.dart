@@ -140,9 +140,8 @@ class _StockLookupScreenState extends State<StockLookupScreen>
           if (itemType != itemTypeFilter) return false;
           if (stock <= 0) return false;
 
-          final code = (data['materialCode'] ?? doc.id)
-              .toString()
-              .toLowerCase();
+          final code =
+              (data['materialCode'] ?? doc.id).toString().toLowerCase();
           final name = (data['materialName'] ?? '').toString().toLowerCase();
           final remark = (data['remark'] ?? '').toString().toLowerCase();
           final q = _searchQuery.toLowerCase();

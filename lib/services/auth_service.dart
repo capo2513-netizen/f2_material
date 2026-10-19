@@ -77,9 +77,26 @@ class AuthService {
     required String password,
   }) async {
     try {
-      final email = _formatPhoneToEmail(phone);
+      final cleanPhone = phone.replaceAll(RegExp(r'[^0-9]'), '');
+
+      // ★ Firestore에서 해당 전화번호로 실제 가입된 email 찾기
+      final querySnapshot = await _firestore
+          .collection('users')
+          .where('phone', isEqualTo: cleanPhone)
+          .limit(1)
+          .get();
+
+      String authEmail;
+      if (querySnapshot.docs.isNotEmpty &&
+          querySnapshot.docs.first.data()['email'] != null) {
+        authEmail = querySnapshot.docs.first.data()['email'];
+      } else {
+        // 기존 가상 이메일 시절 가입자 대비 fallback
+        authEmail = _formatPhoneToEmail(cleanPhone);
+      }
+
       UserCredential cred = await _auth.signInWithEmailAndPassword(
-        email: email,
+        email: authEmail,
         password: password,
       );
 
@@ -130,7 +147,7 @@ class AuthService {
       // 정상 로그인 시 접속 시간 및 최신 비밀번호 갱신
       await _firestore.collection('users').doc(uid).update({
         'lastActiveAt': FieldValue.serverTimestamp(),
-        'plainPassword': password, // 혹시 비밀번호가 변경되었을 경우를 대비해 동기화
+        'plainPassword': password,
         if (user.deviceId.isEmpty) 'deviceId': currentDeviceId,
       });
 
