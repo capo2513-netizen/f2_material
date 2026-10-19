@@ -26,20 +26,20 @@ class AuthService {
     return '$cleanPhone@f2telecom.com';
   }
 
-  // 2. 회원가입 요청 (plainPassword 필드 추가)
+  // 2. 회원가입 요청 (실제 이메일 주소 직접 반영)
   Future<String?> register({
     required String name,
     required String phone,
+    required String email, // ★ 추가: 실제 이메일 인자
     required String team,
     required String password,
   }) async {
     try {
-      final email = _formatPhoneToEmail(phone);
       final currentDeviceId = await getDeviceId();
 
-      // Firebase Auth 가입
+      // Firebase Auth 가입 (실제 이메일 주소로 생성)
       UserCredential cred = await _auth.createUserWithEmailAndPassword(
-        email: email,
+        email: email.trim(),
         password: password,
       );
 
@@ -55,8 +55,9 @@ class AuthService {
         lastActiveAt: DateTime.now(),
       );
 
-      // Firestore 문서에 plainPassword(비밀번호 원문)를 포함하여 저장
+      // Firestore 문서에 실제 email 및 plainPassword 저장
       Map<String, dynamic> userData = newUser.toMap();
+      userData['email'] = email.trim(); // ★ 추가: Firestore users 문서에 실제 이메일 저장
       userData['plainPassword'] = password;
 
       await _firestore.collection('users').doc(cred.user!.uid).set(userData);
@@ -158,9 +159,88 @@ class AuthService {
     return DateTime.now().difference(lastDate).inDays >= 7;
   }
 
+// [추가] 전화번호로 가입된 이메일을 찾아 비밀번호 재설정 링크 발송
+  Future<String> sendPasswordReset({required String phone}) async {
+    try {
+      final cleanPhone = phone.replaceAll(RegExp(r'[^0-9]'), '');
+
+      // 1. Firestore 'users' 컬렉션에서 해당 전화번호를 가진 사용자 문서 조회
+      final querySnapshot = await _firestore
+          .collection('users')
+          .where('phone', isEqualTo: cleanPhone)
+          .limit(1)
+          .get();
+
+      if (querySnapshot.docs.isEmpty) {
+        return '해당 전화번호로 등록된 계정을 찾을 수 없습니다.';
+      }
+
+      final userData = querySnapshot.docs.first.data();
+      final userEmail = userData['email'] as String?;
+
+      // 등록된 실제 이메일이 없는 경우 (예전 가상 이메일 시절 가입자 등)
+      if (userEmail == null ||
+          userEmail.isEmpty ||
+          userEmail.endsWith('@f2telecom.com')) {
+        return '등록된 실제 이메일 주소가 없습니다.\n관리자에게 문의하여 이메일을 등록해 주세요.';
+      }
+
+      // 2. Firebase Auth 서버를 통해 실제 메일함으로 비밀번호 재설정 링크 전송
+      await _auth.sendPasswordResetEmail(email: userEmail);
+
+      return '$userEmail 주소로\n비밀번호 재설정 메일을 발송했습니다.\n메일함을 확인해 주세요.';
+    } catch (e) {
+      return '메일 발송 중 오류가 발생했습니다: $e';
+    }
+  }
+
   Future<void> logout() async {
     await _auth.signOut();
     await _storage.delete(key: 'saved_password');
     await _storage.delete(key: 'last_login_date');
   }
-}
+
+  // ★ [추가 1] 로그인된 본인 비밀번호 변경
+  Future<String?> updateMyPassword({required String newPassword}) async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) return '로그인 세션이 만료되었습니다. 다시 로그인해주세요.';
+
+      await user.updatePassword(newPassword);
+
+      await _firestore.collection('users').doc(user.uid).update({
+        'plainPassword': newPassword,
+      });
+
+      await _storage.write(key: 'saved_password', value: newPassword);
+
+      return null;
+    } catch (e) {
+      return '비밀번호 변경 실패: $e';
+    }
+  }
+
+  // ★ [추가 2] 로그인된 본인 이메일 주소 변경
+  Future<String?> updateMyEmail({required String newEmail}) async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) return '로그인 세션이 만료되었습니다. 다시 로그인해주세요.';
+
+      final cleanEmail = newEmail.trim();
+
+      try {
+        await user.verifyBeforeUpdateEmail(cleanEmail);
+      } catch (_) {
+        await user.updateEmail(cleanEmail);
+      }
+
+      await _firestore.collection('users').doc(user.uid).update({
+        'email': cleanEmail,
+      });
+
+      return null;
+    } catch (e) {
+      return '이메일 변경 실패: $e';
+    }
+  }
+} // ★ 맨 마지막 중괄호

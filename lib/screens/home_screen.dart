@@ -66,6 +66,250 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  /// 1. [내 계정 설정 바텀시트 메뉴]
+  void _showAccountSettingsDialog() {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 40,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 16),
+                decoration: BoxDecoration(
+                  color: Colors.grey[300],
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const Text(
+                '내 계정 설정',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 16),
+              ListTile(
+                leading:
+                    const Icon(Icons.lock_outline, color: Color(0xFFA61C24)),
+                title: const Text('비밀번호 변경'),
+                subtitle: const Text('로그인 비밀번호를 새롭게 변경합니다.'),
+                trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _showChangePasswordDialog();
+                },
+              ),
+              const Divider(),
+              ListTile(
+                leading:
+                    const Icon(Icons.email_outlined, color: Color(0xFFA61C24)),
+                title: const Text('이메일 주소 변경'),
+                subtitle: const Text('비밀번호 분실 시 인증받을 이메일을 변경합니다.'),
+                trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _showChangeEmailDialog();
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 2. [비밀번호 변경 팝업]
+  void _showChangePasswordDialog() {
+    final passwordController = TextEditingController();
+    final confirmController = TextEditingController();
+    bool isUpdating = false;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          title: const Text('비밀번호 변경',
+              style: TextStyle(fontWeight: FontWeight.bold)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: passwordController,
+                obscureText: true,
+                decoration: InputDecoration(
+                  labelText: '새 비밀번호',
+                  hintText: '6자리 이상 입력',
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10)),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: confirmController,
+                obscureText: true,
+                decoration: InputDecoration(
+                  labelText: '비밀번호 확인',
+                  hintText: '비밀번호 다시 입력',
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10)),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: isUpdating ? null : () => Navigator.pop(ctx),
+              child: const Text('취소', style: TextStyle(color: Colors.grey)),
+            ),
+            ElevatedButton(
+              onPressed: isUpdating
+                  ? null
+                  : () async {
+                      final newPw = passwordController.text.trim();
+                      final confirmPw = confirmController.text.trim();
+
+                      if (newPw.length < 6) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                              content: Text('비밀번호는 최소 6자리 이상이어야 합니다.')),
+                        );
+                        return;
+                      }
+                      if (newPw != confirmPw) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('비밀번호가 일치하지 않습니다.')),
+                        );
+                        return;
+                      }
+
+                      setDialogState(() => isUpdating = true);
+                      final error = await _authService.updateMyPassword(
+                          newPassword: newPw);
+                      setDialogState(() => isUpdating = false);
+
+                      if (!mounted) return;
+                      Navigator.pop(ctx);
+
+                      if (error == null) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('비밀번호가 성공적으로 변경되었습니다.')),
+                        );
+                      } else {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text(error)),
+                        );
+                      }
+                    },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFA61C24),
+              ),
+              child: isUpdating
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white))
+                  : const Text('변경하기', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 3. [이메일 주소 변경 팝업]
+  void _showChangeEmailDialog() {
+    final emailController = TextEditingController();
+    bool isUpdating = false;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          title: const Text('이메일 주소 변경',
+              style: TextStyle(fontWeight: FontWeight.bold)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                '새로운 이메일 주소를 입력하세요.\n비밀번호 분실 시 해당 메일로 링크가 발송됩니다.',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: emailController,
+                keyboardType: TextInputType.emailAddress,
+                decoration: InputDecoration(
+                  labelText: '새 이메일 주소',
+                  hintText: 'example@gmail.com',
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10)),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: isUpdating ? null : () => Navigator.pop(ctx),
+              child: const Text('취소', style: TextStyle(color: Colors.grey)),
+            ),
+            ElevatedButton(
+              onPressed: isUpdating
+                  ? null
+                  : () async {
+                      final newEmail = emailController.text.trim();
+                      if (!newEmail.contains('@') || !newEmail.contains('.')) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('올바른 이메일 주소를 입력해주세요.')),
+                        );
+                        return;
+                      }
+
+                      setDialogState(() => isUpdating = true);
+                      final error =
+                          await _authService.updateMyEmail(newEmail: newEmail);
+                      setDialogState(() => isUpdating = false);
+
+                      if (!mounted) return;
+                      Navigator.pop(ctx);
+
+                      if (error == null) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                              content: Text('이메일 주소가 성공적으로 변경되었습니다.')),
+                        );
+                      } else {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text(error)),
+                        );
+                      }
+                    },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFA61C24),
+              ),
+              child: isUpdating
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white))
+                  : const Text('변경하기', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final user = widget.user;
@@ -94,71 +338,78 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // 1. 사용자 프로필 정보 카드
+              // 1. 사용자 프로필 정보 카드 (누르면 내 계정 설정 팝업 호출)
               Card(
                 elevation: 2,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: Padding(
-                  padding: const EdgeInsets.all(16.0),
-                  child: Row(
-                    children: [
-                      CircleAvatar(
-                        radius: 28,
-                        backgroundColor:
-                            const Color(0xFFA61C24).withOpacity(0.1),
-                        child: const Icon(Icons.person,
-                            size: 34, color: Color(0xFFA61C24)),
-                      ),
-                      const SizedBox(width: 16),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                Text(
-                                  user.name,
-                                  style: const TextStyle(
-                                    fontSize: 18,
-                                    fontWeight: FontWeight.bold,
-                                    color: Color(0xFF1E293B),
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 8, vertical: 2),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFFE2E8F0),
-                                    borderRadius: BorderRadius.circular(6),
-                                  ),
-                                  child: Text(
-                                    user.role == 'super_admin'
-                                        ? '최고관리자'
-                                        : (user.role == 'admin'
-                                            ? '관리자'
-                                            : '작업자'),
+                child: InkWell(
+                  onTap: _showAccountSettingsDialog,
+                  borderRadius: BorderRadius.circular(12),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Row(
+                      children: [
+                        CircleAvatar(
+                          radius: 28,
+                          backgroundColor:
+                              const Color(0xFFA61C24).withOpacity(0.1),
+                          child: const Icon(Icons.person,
+                              size: 34, color: Color(0xFFA61C24)),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Text(
+                                    user.name,
                                     style: const TextStyle(
-                                      fontSize: 11,
+                                      fontSize: 18,
                                       fontWeight: FontWeight.bold,
-                                      color: Color(0xFF475569),
+                                      color: Color(0xFF1E293B),
                                     ),
                                   ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              '소속: ${user.team} | 연락처: ${user.phone}',
-                              style: const TextStyle(
-                                  fontSize: 13, color: Colors.grey),
-                            ),
-                          ],
+                                  const SizedBox(width: 8),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 8, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFE2E8F0),
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: Text(
+                                      user.role == 'super_admin'
+                                          ? '최고관리자'
+                                          : (user.role == 'admin'
+                                              ? '관리자'
+                                              : '작업자'),
+                                      style: const TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.bold,
+                                        color: Color(0xFF475569),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                '소속: ${user.team} | 연락처: ${user.phone}',
+                                style: const TextStyle(
+                                    fontSize: 13, color: Colors.grey),
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
-                    ],
+                        // 설정 진입 안내 아이콘
+                        const Icon(Icons.settings_outlined,
+                            color: Colors.grey, size: 22),
+                      ],
+                    ),
                   ),
                 ),
               ),

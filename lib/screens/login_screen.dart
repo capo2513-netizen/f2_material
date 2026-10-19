@@ -172,6 +172,114 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
+  /// [비밀번호 찾기 / 재설정 메일 발송 팝업]
+  void _showResetPasswordDialog() {
+    final resetPhoneController = TextEditingController();
+    bool isSending = false;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          title: const Row(
+            children: [
+              Icon(Icons.lock_reset, color: Color(0xFFA61C24)),
+              SizedBox(width: 8),
+              Text('비밀번호 재설정',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                '가입 시 등록한 전화번호를 입력하세요.\n등록된 이메일로 비밀번호 재설정 링크가 발송됩니다.',
+                style: TextStyle(fontSize: 13, color: Colors.grey),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: resetPhoneController,
+                keyboardType: TextInputType.phone,
+                decoration: InputDecoration(
+                  prefixIcon:
+                      const Icon(Icons.phone_android, color: Color(0xFFA61C24)),
+                  labelText: '전화번호',
+                  hintText: '01012345678 (- 없이 입력)',
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10)),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: isSending ? null : () => Navigator.pop(ctx),
+              child: const Text('취소', style: TextStyle(color: Colors.grey)),
+            ),
+            ElevatedButton(
+              onPressed: isSending
+                  ? null
+                  : () async {
+                      final inputPhone = resetPhoneController.text
+                          .trim()
+                          .replaceAll(RegExp(r'[^0-9]'), '');
+                      if (inputPhone.isEmpty) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('전화번호를 입력해주세요.')),
+                        );
+                        return;
+                      }
+
+                      setDialogState(() => isSending = true);
+
+                      // Firestore에서 해당 전화번호의 이메일 조회 후 재설정 링크 발송
+                      final resultMsg = await _authService.sendPasswordReset(
+                          phone: inputPhone);
+
+                      setDialogState(() => isSending = false);
+                      if (!mounted) return;
+
+                      Navigator.pop(ctx);
+                      showDialog(
+                        context: context,
+                        builder: (_) => AlertDialog(
+                          title: const Text('비밀번호 재설정 안내',
+                              style: TextStyle(fontWeight: FontWeight.bold)),
+                          content: Text(resultMsg),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(context),
+                              child: const Text('확인'),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFA61C24),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8)),
+              ),
+              child: isSending
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white),
+                    )
+                  : const Text('메일 발송',
+                      style: TextStyle(
+                          color: Colors.white, fontWeight: FontWeight.bold)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -261,7 +369,21 @@ class _LoginScreenState extends State<LoginScreen> {
                           ),
                   ),
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 8),
+
+                // 비밀번호 재설정 버튼
+                TextButton(
+                  onPressed: _showResetPasswordDialog,
+                  child: const Text(
+                    '비밀번호를 잊으셨나요?',
+                    style: TextStyle(
+                      color: Colors.grey,
+                      fontSize: 13,
+                      decoration: TextDecoration.underline,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
 
                 // 회원가입 페이지 이동
                 Row(
