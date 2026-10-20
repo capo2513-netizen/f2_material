@@ -37,13 +37,19 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
   String _tradeType = '출고'; // '출고' 또는 '입고(반납)'
   final TextEditingController _memoController = TextEditingController();
   final List<OutItem> _cart = [];
+  final List<String> _sktList = []; // ★ [추가] SKT 장비 바코드 스캔 목록
   bool _isSubmitting = false;
 
-  // [카메라 스캐너 상태] SKT 바코드 화면과 동일한 컨트롤러 설정
+  // [카메라 스캐너 상태] 자재 QR 및 SKT 바코드(Code128, Code39 등) 통합 인식 컨트롤러
   bool _showScanner = false;
   final MobileScannerController _scannerController = MobileScannerController(
     detectionSpeed: DetectionSpeed.normal,
-    formats: const [BarcodeFormat.qrCode],
+    formats: const [
+      BarcodeFormat.qrCode,
+      BarcodeFormat.code128,
+      BarcodeFormat.code39,
+      BarcodeFormat.dataMatrix,
+    ],
   );
   bool _isProcessingScan = false;
   double _zoomScale = 0.0; // 0.0: 1x(기본), 0.45: 2x, 0.8: 3x(초소형 QR 전용)
@@ -76,6 +82,17 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
     _memoController.dispose();
     _scannerController.dispose();
     super.dispose();
+  }
+
+  // ★ 안드로이드 하드웨어 ToneGenerator 연결 통로
+  static const MethodChannel _beepChannel = MethodChannel('f2_material/beep');
+
+  // ★ 스캔 성공 시 진동 + 안드로이드 내장 비프음 즉시 강제 출력
+  void _triggerScanFeedback() {
+    HapticFeedback.mediumImpact(); // 1. 햅틱 진동
+    _beepChannel.invokeMethod('playBeep').catchError((_) {
+      SystemSound.play(SystemSoundType.alert);
+    }); // 2. 안드로이드 POS/스캐너 비프음 즉시 발생
   }
 
   // 1단계: 로컬 캐시 즉시 로드 ➡️ 2단계: 변경분만 증분 동기화
@@ -253,14 +270,14 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
     );
   }
 
-  // ★ [핵심] 상단 카메라에서 QR 감지 시 실행되는 처리 함수 (SKT 구조 일치 & 오차 원천 차단)
+  // ★ [핵심] 상단 카메라에서 바코드/QR 감지 시 자동 분류 처리 (F2 자재 vs SKT 장비)
   void _onDetectQR(BarcodeCapture capture) async {
     if (_isProcessingScan) return;
     final rawVal = capture.barcodes.firstOrNull?.rawValue?.trim();
     if (rawVal == null || rawVal.isEmpty) return;
 
     setState(() => _isProcessingScan = true);
-    HapticFeedback.mediumImpact();
+    _triggerScanFeedback(); // ★ 진동 + 비프음 동시 실행
 
     try {
       String targetWarehouse = _selectedWarehouse;
@@ -274,7 +291,88 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
         }
       }
 
-      // ★ [거점 자동 전환 - 옵션 A] QR 거점이 현재 화면 거점과 다를 때 자동 전환 및 장바구니 초기화 안내
+      // 1. 자재 마스터 캐시에서 일치하는 자재가 있는지 먼저 검색
+      Map<String, dynamic> target = _cachedMaterials.firstWhere(
+        (m) {
+          final wh = (m['warehouse'] ?? '').toString().trim();
+          final code = (m['materialCode'] ?? m['F2자재코드'] ?? m['docId'] ?? '')
+              .toString()
+              .trim();
+          return wh == targetWarehouse && code == materialCode;
+        },
+        orElse: () => {},
+      );
+
+      if (target.isEmpty) {
+        target = _cachedMaterials.firstWhere(
+          (m) {
+            final wh = (m['warehouse'] ?? '').toString().trim();
+            final code = (m['materialCode'] ?? m['F2자재코드'] ?? m['docId'] ?? '')
+                .toString()
+                .trim();
+            return wh == '광주' && code == materialCode;
+          },
+          orElse: () => {},
+        );
+      }
+
+      // ========================================================
+      // [자동 분기 A] 자재 마스터에 없는 코드인 경우 -> SKT 바코드 검사
+      // ========================================================
+      if (target.isEmpty) {
+        // ★ [SKT 바코드 무결성 검증]
+        // 1) 거점 기호(|) 미포함
+        // 2) 부분 인식 방지를 위한 최소 10자리 이상 검증 (조각 스캔 차단)
+        // 3) 영문 대소문자/숫자 조합 형태 검증
+        final bool isLikelySktBarcode = !rawVal.contains('|') &&
+            rawVal.length >= 10 &&
+            RegExp(r'^[a-zA-Z0-9\-_]+$').hasMatch(rawVal);
+
+        if (isLikelySktBarcode) {
+          if (_sktList.contains(rawVal)) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).hideCurrentSnackBar();
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('이미 스캔된 SKT 바코드입니다: $rawVal'),
+                  duration: const Duration(milliseconds: 1000),
+                ),
+              );
+            }
+          } else {
+            setState(() {
+              _sktList.insert(0, rawVal); // 최신 스캔 항목이 맨 위로
+            });
+            if (mounted) {
+              ScaffoldMessenger.of(context).hideCurrentSnackBar();
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('SKT 바코드 인식 완료: $rawVal'),
+                  backgroundColor: const Color(0xFFE65100),
+                  duration: const Duration(milliseconds: 1000),
+                ),
+              );
+            }
+          }
+          await Future.delayed(const Duration(milliseconds: 800));
+          if (mounted) setState(() => _isProcessingScan = false);
+          return;
+        }
+
+        // 6자리 미만이거나 유효하지 않은 바코드
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('등록되지 않은 자재코드입니다: $materialCode')),
+        );
+        await Future.delayed(const Duration(milliseconds: 1500));
+        setState(() => _isProcessingScan = false);
+        return;
+      }
+
+      // ========================================================
+      // [자동 분기 B] 자재 마스터에 존재하는 F2 자재 (기존 로직 100% 보존)
+      // ========================================================
+      // 거점 자동 전환 처리
       if (targetWarehouse != _selectedWarehouse) {
         final prevWarehouse = _selectedWarehouse;
         if (_cart.isNotEmpty) {
@@ -305,40 +403,6 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
             );
           }
         }
-      }
-
-      Map<String, dynamic> target = _cachedMaterials.firstWhere(
-        (m) {
-          final wh = (m['warehouse'] ?? '').toString().trim();
-          final code = (m['materialCode'] ?? m['F2자재코드'] ?? m['docId'] ?? '')
-              .toString()
-              .trim();
-          return wh == targetWarehouse && code == materialCode;
-        },
-        orElse: () => {},
-      );
-
-      if (target.isEmpty) {
-        target = _cachedMaterials.firstWhere(
-          (m) {
-            final wh = (m['warehouse'] ?? '').toString().trim();
-            final code = (m['materialCode'] ?? m['F2자재코드'] ?? m['docId'] ?? '')
-                .toString()
-                .trim();
-            return wh == '광주' && code == materialCode;
-          },
-          orElse: () => {},
-        );
-      }
-
-      if (target.isEmpty) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('등록되지 않은 자재코드입니다: $materialCode')),
-        );
-        await Future.delayed(const Duration(milliseconds: 1500));
-        setState(() => _isProcessingScan = false);
-        return;
       }
 
       final matName = (target['materialName'] ?? target['품명'] ?? '').toString();
@@ -473,19 +537,19 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
     }
   }
 
-  // ★ [3단계 핵심] 최종 입출고 전송 (국소명/메모 의무 검증)
+  // ★ [4단계 핵심] 최종 입출고 및 SKT 바코드 통합 전송 (국소명/메모 의무 검증)
   Future<void> _submitTrade() async {
-    // 1) 담긴 자재 유무 체크
-    if (_cart.isEmpty) {
+    // 1) 담긴 항목(자재 또는 SKT 바코드) 유무 체크
+    if (_cart.isEmpty && _sktList.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('담긴 $_tradeType 자재가 없습니다.')),
+        const SnackBar(content: Text('담긴 자재 또는 SKT 바코드가 없습니다.')),
       );
       return;
     }
 
     final memoText = _memoController.text.trim();
 
-    // ★ [핵심] 국소명/메모란 비어있을 시 전송 차단 및 의무 입력 안내 팝업
+    // 2) 국소명/메모란 비어있을 시 전송 차단 및 의무 입력 안내 팝업
     if (memoText.isEmpty) {
       showDialog(
         context: context,
@@ -499,7 +563,7 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
             ],
           ),
           content: const Text(
-            '국소명/메모가 입력되지 않았습니다.\n\n출고/반납 사유 및 작업 국소명을 반드시 입력한 후 다시 전송해 주세요.',
+            '국소명/메모가 입력되지 않았습니다.\n\n작업 국소명 또는 사유를 반드시 입력한 후 다시 전송해 주세요.',
             style: TextStyle(fontSize: 14),
           ),
           actions: [
@@ -517,18 +581,18 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
       return;
     }
 
-    // 2) 전송 확인 다이얼로그
+    // 3) 전송 확인 다이얼로그 (자재와 SKT 항목 각각 집계 표시)
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text('$_tradeType 전송 확인',
-            style: const TextStyle(fontWeight: FontWeight.bold)),
+        title: const Text('통합 전송 확인',
+            style: TextStyle(fontWeight: FontWeight.bold)),
         content: Text(
-          '선택 구분: [$_tradeType]\n'
           '선택 거점: [$_selectedWarehouse 창고]\n'
-          '국소명/메모: $memoText\n'
-          '총 ${_cart.length}개 품목 (${_totalItemCount}개)\n\n'
-          '$_tradeType 내역을 확정 전송하시겠습니까?',
+          '국소명/메모: $memoText\n\n'
+          '${_cart.isNotEmpty ? "• [$_tradeType] 자재: ${_cart.length}종 (${_totalItemCount}개)\n" : ""}'
+          '${_sktList.isNotEmpty ? "• SKT 장비 바코드: ${_sktList.length}건\n" : ""}\n'
+          '내역을 확정 전송하시겠습니까?',
         ),
         actions: [
           TextButton(
@@ -541,7 +605,7 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
               backgroundColor: _themeColor,
               foregroundColor: Colors.white,
             ),
-            child: Text('$_tradeType 확정'),
+            child: const Text('확정 전송'),
           ),
         ],
       ),
@@ -560,53 +624,82 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
 
       final firestore = FirebaseFirestore.instance;
       final batch = firestore.batch();
-      final logCollection = firestore.collection('normal_out_logs');
-      final matCollection = firestore.collection('materials');
 
-      // 입고(반납)이면 재고 가산(+), 출고이면 재고 차감(-)
+      // [A] 일반 자재 입출고 저장 (지입,사급 입출고 시트 연동)
       final int stockMultiplier = _tradeType == '출고' ? -1 : 1;
+      if (_cart.isNotEmpty) {
+        final logCollection = firestore.collection('normal_out_logs');
+        final matCollection = firestore.collection('materials');
 
-      for (var item in _cart) {
-        final docRef = logCollection.doc();
-        batch.set(docRef, {
-          'timestamp': FieldValue.serverTimestamp(),
-          'type': _tradeType,
-          'outDate': dateStr,
-          'outTime': timeStr,
-          'warehouse': _selectedWarehouse,
-          'team': widget.currentUser.team,
-          'userName': widget.currentUser.name,
-          'userPhone': widget.currentUser.phone,
-          'materialCode': item.materialCode,
-          'materialName': item.materialName,
-          'quantity': item.quantity,
-          'memo': memoText,
-          'syncedToExcel': false,
-        });
+        for (var item in _cart) {
+          final docRef = logCollection.doc();
+          batch.set(docRef, {
+            'timestamp': FieldValue.serverTimestamp(),
+            'type': _tradeType,
+            'outDate': dateStr,
+            'outTime': timeStr,
+            'warehouse': _selectedWarehouse,
+            'team': widget.currentUser.team,
+            'userName': widget.currentUser.name,
+            'userPhone': widget.currentUser.phone,
+            'materialCode': item.materialCode,
+            'materialName': item.materialName,
+            'quantity': item.quantity,
+            'memo': memoText,
+            'syncedToExcel': false,
+          });
 
-        String docKey = '${_selectedWarehouse}_${item.materialCode}';
-        final matDocRef = matCollection.doc(docKey);
-        batch.update(matDocRef, {
-          'currentStock': FieldValue.increment(item.quantity * stockMultiplier),
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
+          String docKey = '${_selectedWarehouse}_${item.materialCode}';
+          final matDocRef = matCollection.doc(docKey);
+          batch.update(matDocRef, {
+            'currentStock':
+                FieldValue.increment(item.quantity * stockMultiplier),
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
+        }
       }
 
+      // [B] SKT 장비 바코드 저장 (SKT바코드 시트 연동)
+      if (_sktList.isNotEmpty) {
+        final sktCollection = firestore.collection('skt_barcodes');
+        for (var code in _sktList) {
+          final docRef = sktCollection.doc();
+          batch.set(docRef, {
+            'timestamp': FieldValue.serverTimestamp(),
+            'regDate': dateStr,
+            'regTime': timeStr,
+            'team': widget.currentUser.team,
+            'userName': widget.currentUser.name,
+            'userPhone': widget.currentUser.phone,
+            'barcode': code,
+            'memo': memoText,
+            'syncedToExcel': false,
+          });
+        }
+      }
+
+      // Firestore 일괄 커밋
       await batch.commit();
 
-      // 로컬 파일 캐시에도 변경 품목의 현재고를 즉시 갱신
-      for (var cartItem in _cart) {
-        await MaterialCacheService.updateLocalStock(
-          _cachedMaterials,
-          _selectedWarehouse,
-          cartItem.materialCode,
-          cartItem.quantity * stockMultiplier,
-        );
+      // 로컬 파일 캐시에도 자재 현재고 반영
+      if (_cart.isNotEmpty) {
+        for (var cartItem in _cart) {
+          await MaterialCacheService.updateLocalStock(
+            _cachedMaterials,
+            _selectedWarehouse,
+            cartItem.materialCode,
+            cartItem.quantity * stockMultiplier,
+          );
+        }
       }
+
+      final submittedCartCount = _cart.length;
+      final submittedSktCount = _sktList.length;
 
       if (!mounted) return;
       setState(() {
         _cart.clear();
+        _sktList.clear();
         _memoController.clear();
         _isSubmitting = false;
       });
@@ -614,10 +707,14 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
       showDialog(
         context: context,
         builder: (ctx) => AlertDialog(
-          title: Text('$_tradeType 완료',
-              style: const TextStyle(fontWeight: FontWeight.bold)),
-          content:
-              Text('[$_selectedWarehouse] $_tradeType 등록 및 재고 수량이 정상 반영되었습니다.'),
+          title: const Text('전송 완료',
+              style: TextStyle(fontWeight: FontWeight.bold)),
+          content: Text(
+            '성공적으로 전송되었습니다.\n\n'
+            '${submittedCartCount > 0 ? "• 자재: $submittedCartCount종 재고 반영 완료\n" : ""}'
+            '${submittedSktCount > 0 ? "• SKT 바코드: $submittedSktCount건 연동 대기\n" : ""}'
+            '\n엑셀 동기화 시트에서 바로 확인하실 수 있습니다.',
+          ),
           actions: [
             ElevatedButton(
               onPressed: () => Navigator.pop(ctx),
@@ -634,7 +731,7 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
       if (!mounted) return;
       setState(() => _isSubmitting = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('$_tradeType 전송 중 오류가 발생했습니다: $e')),
+        SnackBar(content: Text('전송 중 오류가 발생했습니다: $e')),
       );
     }
   }
@@ -982,20 +1079,25 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
                   ),
                 ),
 
-                // 담기 목록 헤더
+                // ★ [3단계 개선] 담기 목록 헤더 (자재 및 SKT 바코드 현황 요약)
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Text(
-                        '$_tradeType 담기 목록 (${_cart.length}종 / 총 $_totalItemCount개)',
+                        '담기 내역 (자재 ${_cart.length}종 / SKT ${_sktList.length}건)',
                         style: const TextStyle(
                             fontWeight: FontWeight.bold, fontSize: 14),
                       ),
-                      if (_cart.isNotEmpty)
+                      if (_cart.isNotEmpty || _sktList.isNotEmpty)
                         TextButton(
-                          onPressed: () => setState(() => _cart.clear()),
+                          onPressed: () {
+                            setState(() {
+                              _cart.clear();
+                              _sktList.clear();
+                            });
+                          },
                           child: const Text('전체 비우기',
                               style:
                                   TextStyle(color: Colors.red, fontSize: 12)),
@@ -1004,9 +1106,9 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
                   ),
                 ),
 
-                // 담기 리스트
+                // ★ [3단계 개선] 통합 담기 리스트 (일반 자재 + SKT 바코드 묶음 노출)
                 Expanded(
-                  child: _cart.isEmpty
+                  child: (_cart.isEmpty && _sktList.isEmpty)
                       ? Center(
                           child: Column(
                             mainAxisAlignment: MainAxisAlignment.center,
@@ -1015,7 +1117,7 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
                                   size: 54, color: Colors.grey[400]),
                               const SizedBox(height: 12),
                               Text(
-                                '[$_selectedWarehouse 창고] 담긴 $_tradeType 자재가 없습니다.\n위의 [목록 선택] 또는 [QR 스캔]으로 자재를 담아주세요.',
+                                '[$_selectedWarehouse 창고] 담긴 자재 또는 장비가 없습니다.\n위의 [목록 선택] 또는 [스캐너]로 바코드를 비춰주세요.',
                                 textAlign: TextAlign.center,
                                 style: TextStyle(
                                     color: Colors.grey[600], fontSize: 13),
@@ -1023,104 +1125,199 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
                             ],
                           ),
                         )
-                      : ListView.separated(
-                          padding: const EdgeInsets.all(16),
-                          itemCount: _cart.length,
-                          separatorBuilder: (_, __) =>
-                              const SizedBox(height: 10),
-                          itemBuilder: (ctx, index) {
-                            final item = _cart[index];
-                            return Card(
-                              shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(10)),
-                              child: Padding(
-                                padding: const EdgeInsets.all(12),
-                                child: Row(
-                                  children: [
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            item.materialName,
-                                            style: const TextStyle(
-                                              fontWeight: FontWeight.bold,
-                                              fontSize: 14,
-                                            ),
-                                          ),
-                                          const SizedBox(height: 4),
-                                          Text(
-                                            '코드: ${item.materialCode}',
-                                            style: TextStyle(
-                                                fontSize: 11,
-                                                color: Colors.grey[600]),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                    Row(
+                      : ListView(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 8),
+                          children: [
+                            // 1. 일반 자재 목록 섹션
+                            if (_cart.isNotEmpty) ...[
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 6),
+                                child: Text(
+                                  '📦 $_tradeType 자재 목록 (${_cart.length}종 / 총 $_totalItemCount개)',
+                                  style: TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.bold,
+                                      color: _themeColor),
+                                ),
+                              ),
+                              ..._cart.asMap().entries.map((entry) {
+                                final index = entry.key;
+                                final item = entry.value;
+                                return Card(
+                                  margin: const EdgeInsets.only(bottom: 8),
+                                  shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(10)),
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(12),
+                                    child: Row(
                                       children: [
-                                        IconButton(
-                                          icon: const Icon(
-                                              Icons.remove_circle_outline,
-                                              size: 22),
-                                          onPressed: () {
-                                            if (item.quantity > 1) {
-                                              setState(() => item.quantity--);
-                                            } else {
-                                              setState(
-                                                  () => _cart.removeAt(index));
-                                            }
-                                          },
+                                        Expanded(
+                                          child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                item.materialName,
+                                                style: const TextStyle(
+                                                  fontWeight: FontWeight.bold,
+                                                  fontSize: 14,
+                                                ),
+                                              ),
+                                              const SizedBox(height: 4),
+                                              Text(
+                                                '코드: ${item.materialCode}',
+                                                style: TextStyle(
+                                                    fontSize: 11,
+                                                    color: Colors.grey[600]),
+                                              ),
+                                            ],
+                                          ),
                                         ),
-                                        InkWell(
-                                          onTap: () =>
-                                              _editQuantityDirectly(item),
-                                          borderRadius:
-                                              BorderRadius.circular(6),
-                                          child: Container(
-                                            padding: const EdgeInsets.symmetric(
-                                                horizontal: 10, vertical: 6),
-                                            decoration: BoxDecoration(
-                                              color: const Color(0xFFF1F5F9),
+                                        Row(
+                                          children: [
+                                            IconButton(
+                                              icon: const Icon(
+                                                  Icons.remove_circle_outline,
+                                                  size: 22),
+                                              onPressed: () {
+                                                if (item.quantity > 1) {
+                                                  setState(
+                                                      () => item.quantity--);
+                                                } else {
+                                                  setState(() =>
+                                                      _cart.removeAt(index));
+                                                }
+                                              },
+                                            ),
+                                            InkWell(
+                                              onTap: () =>
+                                                  _editQuantityDirectly(item),
                                               borderRadius:
                                                   BorderRadius.circular(6),
-                                              border: Border.all(
+                                              child: Container(
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                        horizontal: 10,
+                                                        vertical: 6),
+                                                decoration: BoxDecoration(
                                                   color:
-                                                      const Color(0xFFCBD5E1)),
-                                            ),
-                                            child: Text(
-                                              '${item.quantity}',
-                                              style: TextStyle(
-                                                fontSize: 16,
-                                                fontWeight: FontWeight.bold,
-                                                color: _themeColor,
+                                                      const Color(0xFFF1F5F9),
+                                                  borderRadius:
+                                                      BorderRadius.circular(6),
+                                                  border: Border.all(
+                                                      color: const Color(
+                                                          0xFFCBD5E1)),
+                                                ),
+                                                child: Text(
+                                                  '${item.quantity}',
+                                                  style: TextStyle(
+                                                    fontSize: 16,
+                                                    fontWeight: FontWeight.bold,
+                                                    color: _themeColor,
+                                                  ),
+                                                ),
                                               ),
                                             ),
-                                          ),
-                                        ),
-                                        IconButton(
-                                          icon: const Icon(
-                                              Icons.add_circle_outline,
-                                              size: 22),
-                                          onPressed: () {
-                                            setState(() => item.quantity++);
-                                          },
-                                        ),
-                                        IconButton(
-                                          icon: const Icon(Icons.delete_outline,
-                                              color: Colors.grey, size: 20),
-                                          onPressed: () => setState(
-                                              () => _cart.removeAt(index)),
+                                            IconButton(
+                                              icon: const Icon(
+                                                  Icons.add_circle_outline,
+                                                  size: 22),
+                                              onPressed: () {
+                                                setState(() => item.quantity++);
+                                              },
+                                            ),
+                                            IconButton(
+                                              icon: const Icon(
+                                                  Icons.delete_outline,
+                                                  color: Colors.grey,
+                                                  size: 20),
+                                              onPressed: () => setState(
+                                                  () => _cart.removeAt(index)),
+                                            ),
+                                          ],
                                         ),
                                       ],
+                                    ),
+                                  ),
+                                );
+                              }),
+                              const SizedBox(height: 12),
+                            ],
+
+                            // 2. SKT 장비 바코드 목록 섹션
+                            if (_sktList.isNotEmpty) ...[
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 6),
+                                child: Row(
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    const Text(
+                                      '📶 SKT 장비 바코드 목록',
+                                      style: TextStyle(
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.bold,
+                                          color: Color(0xFFE65100)),
+                                    ),
+                                    Text(
+                                      '총 ${_sktList.length}건',
+                                      style: const TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.bold,
+                                          color: Color(0xFFE65100)),
                                     ),
                                   ],
                                 ),
                               ),
-                            );
-                          },
+                              ..._sktList.asMap().entries.map((entry) {
+                                final idx = entry.key;
+                                final code = entry.value;
+                                return Card(
+                                  margin: const EdgeInsets.only(bottom: 6),
+                                  shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(8)),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 12, vertical: 8),
+                                    child: Row(
+                                      children: [
+                                        CircleAvatar(
+                                          radius: 11,
+                                          backgroundColor:
+                                              const Color(0xFFFFF3E0),
+                                          child: Text(
+                                              '${_sktList.length - idx}',
+                                              style: const TextStyle(
+                                                  fontSize: 10,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Color(0xFFE65100))),
+                                        ),
+                                        const SizedBox(width: 10),
+                                        Expanded(
+                                          child: Text(
+                                            code,
+                                            style: const TextStyle(
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 13,
+                                                letterSpacing: 0.5),
+                                          ),
+                                        ),
+                                        IconButton(
+                                          icon: const Icon(Icons.close,
+                                              size: 18, color: Colors.grey),
+                                          onPressed: () {
+                                            setState(
+                                                () => _sktList.removeAt(idx));
+                                          },
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              }),
+                            ],
+                          ],
                         ),
                 ),
 
@@ -1134,7 +1331,8 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
                       width: double.infinity,
                       height: 48,
                       child: ElevatedButton(
-                        onPressed: (_cart.isEmpty || _isSubmitting)
+                        onPressed: ((_cart.isEmpty && _sktList.isEmpty) ||
+                                _isSubmitting)
                             ? null
                             : _submitTrade,
                         style: ElevatedButton.styleFrom(
@@ -1151,9 +1349,9 @@ class _UserOutScanScreenState extends State<UserOutScanScreen> {
                                     color: Colors.white, strokeWidth: 2),
                               )
                             : Text(
-                                _cart.isEmpty
-                                    ? '$_tradeType 할 자재를 담아주세요'
-                                    : '$_tradeType 전송 완료 ($_totalItemCount개 확정)',
+                                (_cart.isEmpty && _sktList.isEmpty)
+                                    ? '항목을 담아주세요'
+                                    : '확정 전송 완료 (자재 $_totalItemCount개 / SKT ${_sktList.length}건)',
                                 style: const TextStyle(
                                     fontWeight: FontWeight.bold, fontSize: 16),
                               ),

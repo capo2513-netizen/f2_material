@@ -80,6 +80,17 @@ class _AdvancedInventoryScreenState extends State<AdvancedInventoryScreen> {
     super.dispose();
   }
 
+  // ★ [추가] 안드로이드 하드웨어 ToneGenerator 연결 통로
+  static const MethodChannel _beepChannel = MethodChannel('f2_material/beep');
+
+  // ★ [추가] 스캔 성공 시 진동 + 안드로이드 내장 비프음 즉시 강제 출력
+  void _triggerScanFeedback() {
+    HapticFeedback.mediumImpact(); // 1. 햅틱 진동
+    _beepChannel.invokeMethod('playBeep').catchError((_) {
+      SystemSound.play(SystemSoundType.alert);
+    }); // 2. 안드로이드 POS/스캐너 비프음 즉시 발생
+  }
+
   // 1단계: 로컬 캐시 즉시 로드(0초/읽기0회) ➡️️ 2단계: 변경분만 증분 동기화
   Future<void> _initMaterialCache() async {
     setState(() => _isLoadingMaterials = true);
@@ -262,7 +273,7 @@ class _AdvancedInventoryScreenState extends State<AdvancedInventoryScreen> {
     if (rawVal == null || rawVal.isEmpty) return;
 
     setState(() => _isProcessingScan = true);
-    HapticFeedback.mediumImpact();
+    _triggerScanFeedback(); // ★ 교체 완료! (진동 + ToneGenerator 비프음 동시 발생)
 
     try {
       String targetWarehouse = _selectedWarehouse;
